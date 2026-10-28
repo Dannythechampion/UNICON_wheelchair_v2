@@ -1,0 +1,54 @@
+{
+ "map_id": "route2_intern_20261026",
+ "frame_id": "map",
+ "map": {
+  "file": "route2_intern.pcd",
+  "sha256": "e0809f29a7c185b7e40b3cb1889e558fa5aa0bec51834023681d19cb77f74432",
+  "points": 3865024,
+  "format": "PCD v0.7 binary XYZI float32",
+  "source": "GLIM reprocessing of the 2026-10-16 route2 mapping bag (USB field_20261016/ros2_glim/route2_ros2), exported 2026-10-26",
+  "origin": "sensor pose at the start of the route2 drive, at A (aejimun)"
+ },
+ "trajectory": {
+  "file": "traj_lidar.txt",
+  "sha256": "0a4b35d9039343293afd74e2522b5b8dd5ac36ab124d34dfe9aa62d41e508ef5",
+  "columns": "t x y z qx qy qz qw (map frame)",
+  "note": "NOT GLIM's own traj_lidar.txt. FAST-LIO /Odometry of the 2026-10-16 route2 drive (all) and right drive (first 100 m, A->D1), each lidar scan registered to this PCD by 2D ICP against wall-height columns. z = local PCD ground + 0.69 m (approximate). Used only for auto-init global-search candidates; replace with GLIM's traj_lidar.txt when available."
+ },
+ "alignment": {
+  "method": "per-scan 2D ICP of /livox/lidar (0.2-1.5 m above the sensor, 2-30 m range) against PCD vertical-structure columns, correction interpolated over time",
+  "route2": {
+   "scans": 1377,
+   "median_inlier_within_0p2m": 0.93,
+   "p10_inlier": 0.76
+  },
+  "cross_check": "route2 and right drives corrected independently agree within 0.07-0.57 m on their shared A->fork stretch",
+  "warning": "a trajectory-only fit (nearest map point) looked like 0.03 m but was wrong by up to 6.7 m; do not use that method"
+ },
+ "destinations_map_xy_m": {
+  "A_aejimun": [
+   0.0,
+   0.0
+  ],
+  "D1_international_hall": [
+   75.91,
+   -35.11
+  ],
+  "J_fork": [
+   64.19,
+   -18.68
+  ],
+  "J_route_corner": [
+   86.75,
+   -20.72
+  ],
+  "D4_jungmonggu": [
+   104.03,
+   61.71
+  ],
+  "D5_je2gonghakgwan": [
+   189.59,
+   50.27
+  ]
+ }
+}

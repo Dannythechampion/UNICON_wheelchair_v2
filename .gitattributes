@@ -11,3 +11,9 @@ blackbox/*.bag filter=lfs diff=lfs merge=lfs -text
 # Route assets are hashed byte-for-byte after stripping only a trailing
 # newline, so they must not be line-ending converted either.
 *.json -text
+
+# Localization maps are large binaries: keep them in Git LFS like the black-box
+# bags. Their trajectory files are SHA-256 pinned by start_wheelchair_localization.sh
+# (TRAJ_SHA256), so they must not be line-ending converted either.
+maps/**/*.pcd filter=lfs diff=lfs merge=lfs -text
+maps/**/*.txt -text
