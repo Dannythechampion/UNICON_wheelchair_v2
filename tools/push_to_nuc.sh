@@ -311,7 +311,7 @@ echo "  build OK"
 # further on: a run brought up on last week's settings by a script that looks
 # right.
 for script in start_wheelchair_localization.sh trial_0727.sh go.sh go_mpc.sh \
-              stop.sh; do
+              stop.sh start_route2_intern.sh mark.py; do
   BRINGUP_SRC="$REPO/tools/$script"
   BRINGUP_DST="$HOME/$script"
   [ -f "$BRINGUP_SRC" ] || {
