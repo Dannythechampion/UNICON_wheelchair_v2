@@ -79,7 +79,10 @@ def test_stop_checks_nothing_and_tolerates_failure():
     assert 'data: false' in stop
 
 
-@pytest.mark.parametrize("name", ["trial_0727.sh", "go.sh", "stop.sh"])
+@pytest.mark.parametrize(
+    "name",
+    ["trial_0727.sh", "go.sh", "stop.sh", "start_route2_intern.sh", "mark.py"],
+)
 def test_each_script_is_deployed_and_checksum_verified(name):
     """They live in $HOME, outside the checkout, so a pull never touches
     them - the same way the bringup was found still running the previous
@@ -89,6 +92,35 @@ def test_each_script_is_deployed_and_checksum_verified(name):
     assert "did not install cleanly" in push
 
 
-@pytest.mark.parametrize("name", ["trial_0727.sh", "go.sh", "stop.sh"])
+@pytest.mark.parametrize(
+    "name",
+    ["trial_0727.sh", "go.sh", "stop.sh", "start_route2_intern.sh", "mark.py"],
+)
 def test_each_script_is_executable(name):
     assert (TOOLS / name).stat().st_mode & 0o111, "%s is not executable" % name
+
+
+def test_route2_start_overrides_the_whole_map_identity_and_does_not_drive():
+    """The start script refuses a partial map override; a route2 bringup that
+    left one variable on the v9 default would localize against the wrong map."""
+    start = script("start_route2_intern.sh")
+    for var in ("MAP", "MAP_SHA256", "MAP_ID", "TRAJ", "TRAJ_SHA256",
+                "ROUTE", "BAND", "DRIVABLE_MASK"):
+        assert "export %s=" % var in start
+    assert "SAFETY_POLICIES" not in start.split("set -eo pipefail", 1)[1]
+    assert "waypoint_follower/start" not in start
+    assert "mode_cmd" not in start
+    assert "git lfs pull" in start
+
+
+def test_route2_start_points_at_assets_that_exist():
+    for rel in ("maps/route2_intern_20261026/traj_lidar.txt",
+                "routes/20261028_route2_D5_to_A_waypoints.json",
+                "routes/20261028_route2_D5_to_A_safety_band.json",
+                "routes/route_2d_map_route2_D5_to_A.yaml"):
+        assert (ROOT / rel).is_file(), rel
+
+
+def test_field_marks_reach_the_black_box():
+    assert "/field_mark" in script("start_wheelchair_localization.sh")
+    assert "get_num_connections" in script("mark.py")

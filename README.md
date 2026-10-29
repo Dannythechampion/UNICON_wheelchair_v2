@@ -124,7 +124,8 @@ The v6/v8 route preserves the preferred v6 line while treating the complete v8 m
 drivable boundary. Route contents, band, mask image and mask geometry metadata are hash-bound,
 and the route is smoothed before resampling so raster steps do not command alternating steering.
 
-The `20260814_route_algorithm_*` route is now the runtime default. It is generated from the
+The `20260814_route_algorithm_*` route was promoted on 2026-08-14; the bringup default has
+since moved to `20260816_route_v9_clearance_*`. The algorithm route is generated from the
 dense-map curb corridor, uses a 0.2 m station spacing, and is hash-bound to its safety band and
 drivable mask. The promotion keeps the existing localization and follower validation gates; it
 does not claim field localization validation until a replay and a controlled outdoor run are
@@ -149,6 +150,22 @@ the driven line - a drawing that excludes the path someone actually drove is a d
 Written into `left_corridor_m` / `right_corridor_m` rather than over `left_m`, because telling
 the speed policy that a 2.45 m kerb is 0.80 m away would pace the whole route for a fall that
 was never near.
+
+### route2_intern (2026-10-28)
+
+A second map, separate from the merged 0707/0725 one: the 2026-10-16 route2 mapping drive
+(A 애지문 → D4 정몽구 → D5 제2공학관 → D4 → A) reprocessed with GLIM.
+
+| | `maps/route2_intern_20261026/` + `routes/20261028_route2_D5_to_A_*` |
+| --- | --- |
+| Map | `route2_intern.pcd`, 3.87 M points (Git LFS), origin at A |
+| Route | D5 → D4 → A, 1,193 waypoints (0.2 m), 267.6 m, `chair_centre`, `builtin` |
+| Band / mask | 536 stations at 0.5 m; mask ±1.5 m to D4, ±2.0 m to A |
+| Driven autonomously | **No** - draft, first run aboard, joystick, low speed |
+| Started by | `tools/start_route2_intern.sh D5_to_A` (bringup defaults unchanged) |
+
+Destination coordinates, how the scans were registered to the map, and what has not been
+checked are in [`docs/2026-10-28-route2-intern-map-ko.md`](docs/2026-10-28-route2-intern-map-ko.md).
 
 ## Command path
 
@@ -201,23 +218,49 @@ run is the only place their thresholds can be calibrated against the real thing.
 
 ## Running it
 
-Deploy from a checkout with the map volume attached:
+### 1. Deploy (laptop)
+
+From a checkout of `main` with the merged-map volume attached:
 
 ```bash
 ./tools/push_to_nuc.sh /Volumes/<map-volume>/merged_0707_0725_v1
 ```
 
 It verifies the map bundle byte for byte, syncs and builds the workspace with whichever catkin
-tool owns the build space, and installs the field scripts with checksum verification. Those
-scripts live in `$HOME` outside the checkout, which is how a stale copy once kept launching the
-previous week's route.
+tool owns the build space, and installs the field scripts into `$HOME` with checksum
+verification. Those scripts live outside the checkout, which is how a stale copy once kept
+launching the previous week's route.
 
-At the chair:
+The route2_intern map is in Git LFS, not on the volume. After a deploy, on the NUC:
 
 ```bash
-./trial_0727.sh    # brings the stack up, leaves the follower PAUSED
-./go.sh            # starts the drive
-./stop.sh          # stops it, as does moving the joystick
+cd ~/wheelchair_localization_src && git lfs pull
+```
+
+`start_route2_intern.sh` checks the PCD's SHA-256 and refuses an LFS pointer, so a missed
+`git lfs pull` stops here, not after the stack is up.
+
+### 2. At the chair (NUC)
+
+Operator aboard with a hand on the joystick for every step that can move the chair. Check the
+E-stop first: `/wheel_status` `data[1]` should toggle 65 ↔ 77.
+
+| Step | Command | What it does |
+| --- | --- | --- |
+| Bring up | `~/start_route2_intern.sh D5_to_A` | route2_intern map + D5 → D4 → A route, DWA, guards on. Leaves the follower **PAUSED** |
+| Drive | `~/go.sh` | Starts the drive |
+| Mark | `~/mark.py <label>` | Optional: marks an arrival in the black box and `~/field_marks.log` |
+| Stop | `~/stop.sh` | Stops it, as does moving the joystick |
+
+`LATENCY_S` is not set by the wrapper, so the follower uses its 0.55 s default. Running with
+`LATENCY_S=0 ~/start_route2_intern.sh D5_to_A` is still an open comparison from the 10-16 run.
+
+To run on the previous map (merged 0707/0725 with the v9 route), bring it up without the
+wrapper:
+
+```bash
+PROFILE=dwa ~/start_wheelchair_localization.sh   # field default map and route
+~/trial_0727.sh                                   # 0727 localization trial, guards off
 ```
 
 `go.sh` refuses rather than starts if the follower is absent, the object tracker is silent, or
@@ -225,8 +268,10 @@ localization is not `TRACKING`, and it checks all three before commanding anythi
 placed after the first command runs while the chair is already moving. `stop.sh` checks nothing,
 because a stop that refuses on a failed precondition is not a stop.
 
-A black box records pose, diagnostics, commands, wheel status, follower state and the object
-summary for the whole session. See [`docs/debug_bags.md`](docs/debug_bags.md).
+A black box records pose, diagnostics, commands, wheel status, follower state, the object
+summary and `/field_mark` for the whole session, to `~/localization_trials/blackbox_*.bag`. See
+[`docs/debug_bags.md`](docs/debug_bags.md). `mark.py` waits for the recorder to subscribe before
+it publishes: on 10-16 a bare `rostopic pub -1 /field_mark` reached no bag.
 
 ## Verification
 
@@ -326,6 +371,7 @@ See [`contracts/wp0/A16-release-authority.yaml`](contracts/wp0/A16-release-autho
 
 - [Operator runbook](docs/operator_runbook.md)
 - [2026-08-02 field report](docs/2026-08-02-field-report.md)
+- [route2_intern map and D5 → A route (2026-10-28)](docs/2026-10-28-route2-intern-map-ko.md)
 - [Debug and black-box bags](docs/debug_bags.md)
 - [Replay and offline mapping](docs/replay_and_mapping.md)
 - [Interfaces and ownership](docs/interfaces.md)

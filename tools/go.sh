@@ -10,7 +10,7 @@ export ROS_MASTER_URI=http://127.0.0.1:11311
 fail() { echo "REFUSING TO START: $1" >&2; exit 1; }
 
 rosnode ping -c1 /waypoint_follower >/dev/null 2>&1 \
-  || fail "the follower is not running - bring the stack up with ~/trial_0727.sh"
+  || fail "the follower is not running - bring the stack up with ~/start_route2_intern.sh or ~/start_wheelchair_localization.sh"
 
 # The only guard still watching for people. A silent producer would leave the
 # chair driving on an empty object list, which reads exactly like clear road.
