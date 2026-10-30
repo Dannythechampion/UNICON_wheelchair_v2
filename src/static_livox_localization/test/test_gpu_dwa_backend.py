@@ -96,3 +96,92 @@ def test_accelerated_planner_preserves_cpu_decision_on_reference_backend():
             last_yaw_rate=yaw, last_speed=speed)
         assert observed[2] == expected[2]
         assert np.allclose(observed[:2], expected[:2], atol=1e-9)
+
+
+def test_candidate_veto_skips_the_cheapest_arc_and_fails_closed():
+    planner = dwa_core.DwaPlanner(
+        WideBand(), route(), route_mask=OpenMask())
+    state = (0.0, 0.0, 0.0)
+    nominal = planner.plan(state, speed_cap=0.8, last_speed=0.35)
+    seen = []
+
+    def reject_first(v, w):
+        seen.append((v, w))
+        return len(seen) == 1
+
+    alternate = planner.plan(
+        state, speed_cap=0.8, last_speed=0.35,
+        candidate_veto=reject_first)
+    assert seen[0] == nominal[:2]
+    assert alternate[2] == "OK"
+    assert alternate[:2] != nominal[:2]
+
+    refused = planner.plan(
+        state, speed_cap=0.8, last_speed=0.35,
+        candidate_veto=lambda _v, _w: True)
+    assert refused == (0.0, 0.0, "GATE_TRAJECTORY")
+
+
+def test_gpu_planner_honours_clearance_and_candidate_veto_contract():
+    base = dwa_core.DwaPlanner(
+        WideBand(), route(), route_mask=OpenMask())
+    GpuPlanner = make_gpu_planner(dwa_core.DwaPlanner, dwa_core)
+    accelerated = GpuPlanner(
+        WideBand(), route(), route_mask=OpenMask(),
+        prefer_gpu=False, require_gpu=False)
+    kwargs = dict(
+        obstacles=((2.0, 0.85),), speed_cap=0.8,
+        last_yaw_rate=0.0, last_speed=0.35,
+        obstacle_floor_m=0.80,
+        candidate_veto=lambda _v, w: abs(w) < 0.20)
+    expected = base.plan((0.0, 0.0, 0.0), **kwargs)
+    observed = accelerated.plan((0.0, 0.0, 0.0), **kwargs)
+    assert observed[2] == expected[2]
+    assert np.allclose(observed[:2], expected[:2], atol=1e-9)
+
+
+def test_gate_rejected_yaw_is_not_selected_again():
+    planner = dwa_core.DwaPlanner(
+        WideBand(), route(), route_mask=OpenMask())
+    first = planner.plan(
+        (0.0, 0.0, 0.0), speed_cap=0.35,
+        last_yaw_rate=0.0, last_speed=0.35)
+
+    second = planner.plan(
+        (0.0, 0.0, 0.0), speed_cap=0.35,
+        last_yaw_rate=0.0, last_speed=0.35,
+        rejected_yaw_rates=(first[1],))
+
+    assert first[2] == second[2] == "OK"
+    assert second[1] != first[1]
+
+
+def test_all_gate_rejected_curves_fail_closed():
+    planner = dwa_core.DwaPlanner(
+        WideBand(), route(), route_mask=OpenMask())
+
+    result = planner.plan(
+        (0.0, 0.0, 0.0), speed_cap=0.35,
+        last_yaw_rate=0.0, last_speed=0.35,
+        rejected_yaw_rates=tuple(dwa_core.yaw_samples()))
+
+    assert result == (0.0, 0.0, "GATE_REJECTED")
+
+
+def test_accelerated_planner_accepts_clearance_and_rejected_yaw_inputs():
+    GpuPlanner = make_gpu_planner(dwa_core.DwaPlanner, dwa_core)
+    planner = GpuPlanner(
+        WideBand(), route(), route_mask=OpenMask(),
+        prefer_gpu=False, require_gpu=False)
+
+    first = planner.plan(
+        (0.0, 0.0, 0.0), speed_cap=0.35,
+        last_yaw_rate=0.0, last_speed=0.35,
+        obstacle_floor_m=0.8)
+    second = planner.plan(
+        (0.0, 0.0, 0.0), speed_cap=0.35,
+        last_yaw_rate=0.0, last_speed=0.35,
+        obstacle_floor_m=0.8, rejected_yaw_rates=(first[1],))
+
+    assert first[2] == second[2] == "OK"
+    assert second[1] != first[1]

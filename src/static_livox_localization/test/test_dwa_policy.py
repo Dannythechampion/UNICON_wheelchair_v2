@@ -142,10 +142,11 @@ class RecordingPlanner(object):
 
     def plan(self, state, obstacles=(), speed_cap=None,
              last_yaw_rate=0.0, last_speed=None,
-             obstacle_floor_m=None):
+             obstacle_floor_m=None, candidate_veto=None):
         self.calls.append({"obstacles": list(obstacles),
                            "speed_cap": speed_cap,
-                           "obstacle_floor_m": obstacle_floor_m})
+                           "obstacle_floor_m": obstacle_floor_m,
+                           "candidate_veto": candidate_veto})
         return 0.3, 0.0, "OK"
 
 
@@ -282,7 +283,7 @@ def test_recorded_stationary_person_eventually_allows_safe_bypass(monkeypatch):
     assert len(follower.planner.calls) == 1
     assert follower.planner.calls[0]["obstacles"], \
         "the recorded stationary person never reached DWA geometry planning"
-    assert follower.planner.calls[0]["obstacle_floor_m"] == 0.80
+    assert follower.planner.calls[0]["obstacle_floor_m"] == 0.50
     assert follower.planner.calls[0]["speed_cap"] <= 0.35
 
 
@@ -322,7 +323,7 @@ def test_committed_person_bypass_survives_lateral_arc(monkeypatch):
     assert len(lateral_calls) == 6
     assert all(call["obstacles"] for call in lateral_calls)
     assert all(
-        call["obstacle_floor_m"] == 0.80
+        call["obstacle_floor_m"] == 0.50
         for call in lateral_calls
     )
 
@@ -777,6 +778,594 @@ def blocking_gate(follower, reason="OBSTACLE", held_s=2.0,
     follower.gate_reason = reason
     follower.gate_detail = detail
     follower.gate_blocked_for = lambda now: held_s
+
+
+def test_person_bypass_does_not_blacklist_a_yaw_rejected_by_one_frame():
+    module, _Stamp = load_follower("person_bypass_dwa_follower")
+    follower = module.PersonBypassDwaFollower.__new__(
+        module.PersonBypassDwaFollower)
+    follower.gate_reason = ""
+    follower.gate_blocked_since = None
+    follower.gate_detail = ""
+    follower._committed_bypass_track_id = None
+    follower._committed_bypass_side = 0
+    message = types.SimpleNamespace(data=json.dumps({
+        "reason": "OBSTACLE",
+        "trajectory_override_reason": "REQUESTED_PATH_COLLISION",
+        "trajectory_requested_w": 0.5,
+    }))
+
+    follower.on_gate_status(message)
+
+    assert not hasattr(follower, "_gate_rejected_yaw_rates")
+
+
+def test_final_stop_resynchronizes_the_dwa_command_ramp():
+    module, _Stamp = load_follower("dwa_follower")
+    follower = module.DwaFollower.__new__(module.DwaFollower)
+    follower.current_speed = 0.35
+    follower.last_yaw_rate = 0.2
+    follower.command_accel = 0.18
+    stopped = types.SimpleNamespace(
+        linear=types.SimpleNamespace(x=0.0),
+        angular=types.SimpleNamespace(z=0.0),
+    )
+
+    follower.on_accepted_command(stopped)
+
+    assert follower.current_speed == 0.0
+    assert follower.last_yaw_rate == 0.0
+    assert follower.command_accel == 0.0
+
+
+def test_small_final_command_lag_preserves_the_dwa_acceleration_ramp():
+    module, _Stamp = load_follower("dwa_follower")
+    follower = module.DwaFollower.__new__(module.DwaFollower)
+    follower.current_speed = 0.10
+    follower.last_yaw_rate = 0.2
+    follower.command_accel = 0.08
+    accepted = types.SimpleNamespace(
+        linear=types.SimpleNamespace(x=0.09),
+        angular=types.SimpleNamespace(z=0.18),
+    )
+
+    follower.on_accepted_command(accepted)
+
+    assert follower.current_speed == 0.09
+    assert follower.last_yaw_rate == 0.18
+    assert follower.command_accel == 0.08
+
+
+def test_static_non_person_threat_publishes_a_trajectory_permit(monkeypatch):
+    module, Stamp = load_follower("person_bypass_dwa_follower")
+    follower = module.PersonBypassDwaFollower.__new__(
+        module.PersonBypassDwaFollower)
+    published = []
+    follower.qualifier = types.SimpleNamespace(
+        reset=lambda: None,
+        inactive=lambda now_s, reason: types.SimpleNamespace(
+            active=False, reason=reason))
+    follower.observed_person_permit = lambda now: types.SimpleNamespace(
+        active=False, reason="NO_PERSON")
+    follower.publish_permit = lambda permit: published.append(permit)
+    follower.person_bypass_permit_lifetime_s = 0.45
+    follower.person_bypass_maximum_gap_s = 0.45
+    follower.person_bypass_speed_mps = 0.35
+    follower.person_bypass_clearance_m = 0.80
+    follower._committed_bypass_track_id = None
+    follower._committed_bypass_side = 0
+    follower.planner = types.SimpleNamespace(max_speed=0.8)
+    threat = types.SimpleNamespace(
+        is_person=False,
+        parked=True,
+        track_id=44,
+        observed_stamp_s=99.8,
+        distance_m=2.0,
+        lateral_m=0.3,
+        directly_observed=True,
+        geometry_valid=True,
+        motion="static")
+    monkeypatch.setattr(
+        module.DwaFollower, "avoidance_for",
+        lambda self, now, observed, blocking: module.GO_ROUND)
+
+    decision = follower.avoidance_for(Stamp(100.0), threat, True)
+
+    assert decision == module.GO_ROUND
+    assert published[-1].active
+    assert published[-1].reason == "STATIC_OBJECT_BYPASS"
+
+
+def test_unclassified_but_directly_observed_static_geometry_gets_a_permit(
+        monkeypatch):
+    module, Stamp = load_follower("person_bypass_dwa_follower")
+    follower = module.PersonBypassDwaFollower.__new__(
+        module.PersonBypassDwaFollower)
+    published = []
+    follower.observed_person_permit = lambda now: types.SimpleNamespace(
+        active=False, reason="NO_PERSON")
+    follower.publish_permit = lambda permit: published.append(permit)
+    follower.person_bypass_permit_lifetime_s = .45
+    follower.person_bypass_maximum_gap_s = .45
+    follower.person_bypass_speed_mps = .35
+    follower.person_bypass_clearance_m = .60
+    follower._committed_bypass_track_id = None
+    follower._committed_bypass_side = 0
+    follower.last_yaw_rate = 0.0
+    follower.planner = types.SimpleNamespace(max_speed=.8)
+    # Empty/unknown class is intentional. Authorization depends on current
+    # geometric identity and STATIC motion, not a semantic object name.
+    threat = types.SimpleNamespace(
+        label="", is_person=False, parked=True, motion="static",
+        track_id=3024, observed_stamp_s=99.8,
+        distance_m=1.8, lateral_m=-.25,
+        directly_observed=True, geometry_valid=True)
+    monkeypatch.setattr(
+        module.DwaFollower, "avoidance_for",
+        lambda self, now, observed, blocking: module.GO_ROUND)
+
+    decision = follower.avoidance_for(Stamp(100.0), threat, True)
+
+    assert decision == module.GO_ROUND
+    assert published[-1].active
+    assert published[-1].track_id == 3024
+    assert published[-1].reason == "STATIC_OBJECT_BYPASS"
+
+
+def test_v9_room_choice_uses_wide_left_instead_of_object_opposite_right():
+    module, _Stamp = load_follower("person_bypass_dwa_follower")
+    choose = module.PersonBypassDwaFollower.room_preferred_side
+
+    # Recorded at v9 station 663 in the 23:01 trial: after edge insets the
+    # left remains much wider. The object is slightly left, but there is
+    # still more clearance beyond it than in the narrow right branch.
+    assert choose(-.725, 2.475, 0.0, .577, .60) == 1
+
+
+def test_v9_room_choice_can_still_use_right_when_object_consumes_left():
+    module, _Stamp = load_follower("person_bypass_dwa_follower")
+    choose = module.PersonBypassDwaFollower.room_preferred_side
+
+    assert choose(-1.8, 1.0, 0.0, .8, .60) == -1
+
+
+def test_v9_room_choice_refuses_to_invent_a_side_when_neither_fits():
+    module, _Stamp = load_follower("person_bypass_dwa_follower")
+    choose = module.PersonBypassDwaFollower.room_preferred_side
+
+    assert choose(-.2, .2, 0.0, 0.0, .60) == 0
+
+
+def test_static_object_pass_uses_ego_motion_and_excludes_only_that_track():
+    module, _Stamp = load_follower("person_bypass_dwa_follower")
+    follower = module.PersonBypassDwaFollower.__new__(
+        module.PersonBypassDwaFollower)
+    follower.pose_xy = np.array([0.0, 0.0])
+    follower.pose_yaw = 0.0
+    follower.person_bypass_minimum_near_m = .60
+    follower.person_bypass_clearance_m = .60
+    follower._static_object_track_id = None
+    follower._static_object_world_xy = None
+    follower._static_object_half_forward_m = 0.0
+    follower._static_object_half_lateral_m = 0.0
+    follower._static_object_passed_side = False
+    threat = types.SimpleNamespace(
+        track_id=91, distance_m=1.8, lateral_m=.9,
+        centre_forward_m=2.0, half_forward_m=.2,
+        half_lateral_m=.2)
+
+    assert not follower.update_static_object_pass(threat)
+    follower.pose_xy = np.array([1.7, 0.0])
+    assert follower.update_static_object_pass(threat)
+    assert follower.planner_excluded_track_ids() == (91,)
+
+
+def post_pass_recovery_fixture():
+    module, _Stamp = load_follower("person_bypass_dwa_follower")
+    follower = module.PersonBypassDwaFollower.__new__(
+        module.PersonBypassDwaFollower)
+    follower.pose_xy = np.array([10.0, 5.0])
+    follower.pose_yaw = 0.0
+    follower._post_pass_track_id = None
+    follower._post_pass_origin_xy = None
+    follower.post_pass_straight_distance_m = .8
+    follower.post_pass_straight_yaw_rate = .05
+    follower.post_pass_recovery_yaw_rate = .08
+    follower.post_pass_alignment_lateral_m = .25
+    follower.post_pass_alignment_heading_rad = .12
+    follower.route_error_m = .5
+    follower.planner = types.SimpleNamespace(
+        tree=types.SimpleNamespace(
+            query=lambda _pose: (follower.route_error_m, 0)),
+        heading=np.array([0.0]))
+    permit = types.SimpleNamespace(track_id=250)
+    follower.latch_post_pass_recovery(permit)
+    return module, follower
+
+
+def test_passed_person_holds_near_straight_then_gently_rejoins():
+    _module, follower = post_pass_recovery_fixture()
+
+    follower.pose_xy = np.array([10.4, 5.0])
+    assert follower.post_pass_yaw_cap() == pytest.approx(.05)
+
+    follower.pose_xy = np.array([11.0, 5.0])
+    assert follower.post_pass_yaw_cap() == pytest.approx(.08)
+
+    # Distance alone no longer ends recovery. It ends only after both the
+    # ideal route and its heading have been reached gently.
+    follower.pose_xy = np.array([12.01, 5.0])
+    assert follower.post_pass_yaw_cap() == pytest.approx(.08)
+    follower.route_error_m = .20
+    follower.pose_yaw = .05
+    assert follower.post_pass_yaw_cap() is None
+    assert follower._post_pass_track_id is None
+
+
+def test_post_pass_recovery_vetoes_the_recorded_half_rad_s_snap_back():
+    _module, follower = post_pass_recovery_fixture()
+    follower.pose_xy = np.array([10.4, 5.0])
+    follower.active_trajectory_permit = None
+
+    veto = follower.planner_candidate_veto(
+        types.SimpleNamespace(to_sec=lambda: 100.0), None,
+        lambda v, w: (v, w))
+
+    assert not veto(.35, .05)
+    assert veto(.35, .10)
+    assert veto(.35, .50)
+
+
+def test_ordinary_commitment_reset_keeps_post_pass_recovery():
+    _module, follower = post_pass_recovery_fixture()
+    follower._committed_bypass_track_id = 250
+    follower._committed_bypass_side = 1
+    follower._static_object_track_id = None
+    follower._static_object_world_xy = None
+    follower._static_object_half_forward_m = 0.0
+    follower._static_object_half_lateral_m = 0.0
+    follower._static_object_passed_side = False
+
+    follower.reset_bypass_commitment()
+
+    assert follower._post_pass_track_id == 250
+    assert follower.post_pass_recovery_active()
+
+
+def test_post_pass_recovery_excludes_only_the_passed_track_from_dwa():
+    _module, follower = post_pass_recovery_fixture()
+    follower._static_object_passed_side = False
+    follower._static_object_track_id = None
+
+    assert follower.planner_excluded_track_ids() == (250,)
+
+
+def test_interrupted_active_bypass_enters_gentle_recovery():
+    _module, follower = post_pass_recovery_fixture()
+    follower.reset_post_pass_recovery()
+    follower._maneuver_track_previous_cycle = 1689
+    follower._maneuver_track_this_cycle = None
+    follower.last_yaw_rate = .15
+
+    follower.finish_maneuver_cycle()
+
+    assert follower._post_pass_track_id == 1689
+    assert follower.post_pass_yaw_cap() == pytest.approx(.05)
+
+
+def test_interrupted_bypass_without_a_turn_does_not_slow_the_route():
+    _module, follower = post_pass_recovery_fixture()
+    follower.reset_post_pass_recovery()
+    follower._maneuver_track_previous_cycle = 1442
+    follower._maneuver_track_this_cycle = None
+    follower.last_yaw_rate = 0.0
+
+    follower.finish_maneuver_cycle()
+
+    assert follower._post_pass_track_id is None
+
+
+def test_person_identity_coordinates_are_compensated_for_ego_rotation():
+    module, _Stamp = load_follower("person_bypass_dwa_follower")
+    follower = module.PersonBypassDwaFollower.__new__(
+        module.PersonBypassDwaFollower)
+    observation_type = module.person_observations.__globals__["PersonObservation"]
+    observation = observation_type(
+        track_id=1689, stamp_s=1.0, x_m=0.0, y_m=-2.0,
+        size_x_m=.6, size_y_m=.6, motion="static", source="geometric")
+    # The chair is one metre along x and has turned left 90 degrees. The
+    # stationary person is therefore still at map (3, 0).
+    follower.pose_xy = np.array([1.0, 0.0])
+    follower.pose_yaw = np.pi / 2.0
+
+    compensated = follower.ego_compensated_person_observations((observation,))
+
+    assert compensated[0].tracking_x_m == pytest.approx(3.0)
+    assert compensated[0].tracking_y_m == pytest.approx(0.0)
+    assert compensated[0].x_m == 0.0
+    assert compensated[0].y_m == -2.0
+
+
+def bypass_fixture(monkeypatch):
+    module, Stamp = load_follower("person_bypass_dwa_follower")
+    follower = module.PersonBypassDwaFollower.__new__(module.PersonBypassDwaFollower)
+    follower.qualifier = module.StaticPersonQualifier()
+    follower.person_bypass_maximum_forward_m = 8.0
+    follower.person_bypass_observation_forward_m = 10.0
+    follower.person_bypass_maximum_lateral_m = 1.0
+    follower.person_bypass_lateral_hysteresis_m = 0.25
+    follower.tracking_state = "TRACKING"
+    follower._committed_bypass_track_id = None
+    follower._committed_bypass_side = 0
+    follower.last_yaw_rate = 0.0
+    follower.active_trajectory_permit = None
+    follower.planner = types.SimpleNamespace(max_speed=0.8)
+    permits = []
+    def publish(permit):
+        permits.append(permit)
+        follower._permit_published_this_cycle = True
+    follower.publish_permit = publish
+    # Keep the real base decision in other tests. Here the ordinary query
+    # result is varied explicitly to verify it cannot reset person evidence.
+    monkeypatch.setattr(module.DwaFollower, "avoidance_for",
+                        lambda *a: cg.CLEAR)
+    monkeypatch.setattr(module.dwa_core, "OBSTACLE_FLOOR_M", .5)
+    return module, Stamp, follower, permits
+
+
+def recorded_side_person():
+    # 13:35:50, track 5584, summary recorded during the ~21 s PERSON hold.
+    return dict(id=5584, **{"class": "person"}, motion="static",
+                source="geometric", x=1.339, y=.817, size=[.52, .43, .88],
+                points=1761, profile=dict(bin_m=.2, min_x=[1.13,1.08,1.17], y0=.6))
+
+
+def qualify_bypass_fixture(follower, Stamp, people=None, start=10.0):
+    people = people if people is not None else [recorded_side_person()]
+    for i in range(17):
+        now = start + .2*i
+        follower.cluster_summary = summary_at(now, people)
+        permit = follower.observed_person_permit(Stamp(now))
+    return permit
+
+
+def test_recorded_8m_boundary_does_not_deadlock_the_approach(monkeypatch):
+    module, Stamp, follower, permits = bypass_fixture(monkeypatch)
+    person = dict(recorded_side_person(), x=8.45, y=0.0,
+                  size=[0.2, 0.5, 1.7])
+    follower.cluster_summary = summary_at(10.0, [person])
+    threat = types.SimpleNamespace(is_person=True, parked=True)
+
+    # The 2026-08-30 run saw this same person at about 8.3 m.  It is inside
+    # the observation range, outside the maneuver range, and outside the
+    # dynamic braking envelope, so qualification starts without stopping.
+    assert follower.avoidance_for(Stamp(10.0), threat, False) == cg.CLEAR
+    assert permits[-1].reason == "QUALIFYING_STATIC_PERSON"
+    assert not permits[-1].active
+
+    # Collision distance remains fail-closed while authorization is pending.
+    follower.cluster_summary = summary_at(10.2, [person])
+    assert follower.avoidance_for(Stamp(10.2), threat, True) == module.WAIT
+
+
+def test_static_person_can_qualify_before_entering_maneuver_region(monkeypatch):
+    module, Stamp, follower, _permits = bypass_fixture(monkeypatch)
+    person = dict(recorded_side_person(), x=8.45, y=0.0,
+                  size=[0.2, 0.5, 1.7])
+    for i in range(17):
+        now = 10.0 + 0.2 * i
+        follower.cluster_summary = summary_at(now, [person])
+        permit = follower.observed_person_permit(Stamp(now))
+
+    assert not permit.active
+    assert permit.reason == "STATIC_PERSON_READY_OUTSIDE_MANEUVER_REGION"
+    assert permit.static_for_s >= 3.0
+
+    # Preserve the timer while ego motion brings the same track through 8 m.
+    for i, x_m in enumerate((8.35, 8.25, 8.05), start=17):
+        now = 10.0 + 0.2 * i
+        person["x"] = x_m
+        follower.cluster_summary = summary_at(now, [person])
+        permit = follower.observed_person_permit(Stamp(now))
+
+    assert permit.active
+    assert permit.reason == "STATIC_PERSON_BYPASS"
+    assert permit.static_for_s >= 3.0
+
+
+def test_recorded_semantic_only_side_person_qualifies_without_nearest_query(monkeypatch):
+    module, Stamp, follower, permits = bypass_fixture(monkeypatch)
+    item = recorded_side_person()
+    summary = summary_at(10., [item])
+    assert cg.nearest_threat(summary, .55, labels=("person",)) is None
+    assert cg.nearest_threat(summary, .65, labels=("person",)).track_id == 5584
+    follower.corridor_threat = lambda *a: pytest.fail("narrow query must not gate qualification")
+    permit = qualify_bypass_fixture(follower, Stamp)
+    assert permit.active and permit.static_for_s >= 3.
+    assert follower.avoidance_for(Stamp(13.2), None, False) == module.GO_ROUND
+    assert permits[-1].track_id == 5584
+    assert follower.active_trajectory_permit is not None
+    assert follower.planner.max_speed == .35
+
+
+@pytest.mark.parametrize('ordinary', [cg.CLEAR, cg.GO_ROUND, cg.WAIT])
+def test_nearer_static_object_does_not_erase_person_timer(monkeypatch, ordinary):
+    module, Stamp, follower, permits = bypass_fixture(monkeypatch)
+    monkeypatch.setattr(module.DwaFollower, "avoidance_for", lambda *a: ordinary)
+    nearer = dict(id=5748, **{"class": "obstacle"}, motion="static",
+                  x=1.0, y=0., size=[.1,.1,.2], points=25)
+    threat = types.SimpleNamespace(is_person=False, parked=True)
+    for i in range(18):
+        now = 10.0 + .2*i
+        follower.cluster_summary = summary_at(now, [nearer, recorded_side_person()])
+        result = follower.avoidance_for(Stamp(now), threat, True)
+        if i < 15:
+            assert result == module.WAIT
+            assert not permits[-1].active
+    assert permits[-1].active and permits[-1].track_id == 5584
+    assert permits[-1].static_for_s >= 3.
+    assert permits[-1].reason == "STATIC_PERSON_BYPASS"
+    assert result == (module.WAIT if ordinary == cg.WAIT else module.GO_ROUND)
+
+
+@pytest.mark.parametrize('motion', ['moving', 'unknown'])
+@pytest.mark.parametrize('ordinary', [cg.CLEAR, cg.WAIT, cg.GO_ROUND])
+def test_person_permit_never_overrides_another_nonstatic_obstacle(monkeypatch, motion, ordinary):
+    module, Stamp, follower, permits = bypass_fixture(monkeypatch)
+    qualify_bypass_fixture(follower, Stamp)
+    monkeypatch.setattr(module.DwaFollower, "avoidance_for", lambda *a: ordinary)
+    threat = types.SimpleNamespace(is_person=False, parked=False, motion=motion)
+    assert follower.avoidance_for(Stamp(13.2), threat, True) == module.WAIT
+    assert permits[-1].active  # evidence retained, motion still withheld
+    assert follower.active_trajectory_permit is None
+
+
+@pytest.mark.parametrize('change,reason', [
+    ('moving', 'PERSON_NOT_CONFIRMED_STATIC'),
+    ('unknown', 'PERSON_NOT_CONFIRMED_STATIC'),
+    ('missing', 'NO_PERSON'), ('multiple', 'MULTIPLE_PEOPLE'),
+    ('id', 'QUALIFYING_STATIC_PERSON'), ('jump', 'QUALIFYING_STATIC_PERSON'),
+    ('stale', 'PERSON_OBSERVATION_STALE'),
+    ('localization', 'LOCALIZATION_NOT_TRACKING'),
+    ('close', 'PERSON_TOO_CLOSE'), ('learned', 'PERSON_NOT_CONFIRMED_STATIC')])
+def test_person_evidence_changes_still_revoke_permission(monkeypatch, change, reason):
+    module, Stamp, follower, permits = bypass_fixture(monkeypatch)
+    assert qualify_bypass_fixture(follower, Stamp).active
+    item = recorded_side_person()
+    people = [item]
+    stamp, now = 13.4, 13.4
+    if change in ('moving','unknown'): item['motion'] = change
+    elif change == 'missing': people = []
+    elif change == 'multiple': people.append(dict(item, id=5752))
+    elif change == 'id': item['id'] = 5757
+    elif change == 'jump': item['x'] += .5
+    elif change == 'stale': stamp = 12.0
+    elif change == 'localization': follower.tracking_state = 'LOST'
+    elif change == 'close': item['x'] = .7
+    elif change == 'learned': item['source'] = 'learned_only'
+    follower.cluster_summary = summary_at(stamp, people)
+    permit = follower.observed_person_permit(Stamp(now))
+    assert not permit.active and permit.reason == reason
+    # Even the base's separate remembered-person readiness cannot release.
+    monkeypatch.setattr(module.DwaFollower, 'avoidance_for', lambda *a: cg.PERSON_BYPASS)
+    assert follower.avoidance_for(Stamp(now), types.SimpleNamespace(is_person=True), True) == module.WAIT
+
+
+def test_semantic_validation_retains_same_track_in_qualifier_hysteresis(monkeypatch):
+    module, Stamp, follower, _permits = bypass_fixture(monkeypatch)
+    person = dict(recorded_side_person(), x=3., y=1., size=[.7,.7,1.7])
+    assert qualify_bypass_fixture(follower, Stamp, [person]).active
+    follower.cluster_summary = summary_at(13.3, [dict(person, y=1.2)])
+    assert follower.observed_person_permit(Stamp(13.3)).active
+    person = dict(person, y=1.413)  # box edge 1.063: inside retention, not acquisition
+    follower.cluster_summary = summary_at(13.4, [person])
+    permit = follower.observed_person_permit(Stamp(13.4))
+    assert permit.active
+    semantic, _ = load_follower('person_bypass_semantic_supervisor')
+    supervisor = semantic.PersonBypassSemanticSupervisor.__new__(semantic.PersonBypassSemanticSupervisor)
+    supervisor.bypass_permit = permit
+    supervisor.summary = follower.cluster_summary
+    supervisor.maximum_permit_age_s = .45
+    supervisor.maximum_target_error_m = .45
+    supervisor.bypass_maximum_forward_m = 8.
+    supervisor.bypass_maximum_lateral_m = 1.
+    supervisor.bypass_lateral_hysteresis_m = .25
+    assert supervisor.validated_bypass(13.4)[0] is not None
+    supervisor.summary = summary_at(13.4, [person, dict(person,id=999)])
+    assert supervisor.validated_bypass(13.4) == (None,None)
+    supervisor.summary = summary_at(13.4, [dict(person,motion='moving')])
+    assert supervisor.validated_bypass(13.4) == (None,None)
+
+
+def test_passed_side_person_returns_to_forward_route_without_losing_safety(monkeypatch):
+    module, Stamp, follower, permits = bypass_fixture(monkeypatch)
+    person = dict(recorded_side_person(), x=2., y=.9, size=[.7,.7,1.7])
+    assert qualify_bypass_fixture(follower, Stamp, [person]).active
+    for stamp, x_m in ((13.4, 1.7), (13.6, 1.4),
+                       (13.8, 1.1), (14.0, .8)):
+        follower.cluster_summary = summary_at(
+            stamp, [dict(person, x=x_m, y=.9)])
+        permit = follower.observed_person_permit(Stamp(stamp))
+    assert permit.active and permit.reason == "STATIC_PERSON_PASSED_SIDE"
+    assert follower.avoidance_for(Stamp(14.0), None, False) == module.GO_ROUND
+    assert permits[-1].reason == "STATIC_PERSON_PASSED_SIDE"
+    assert follower.active_trajectory_permit is not None
+
+    semantic, _ = load_follower('person_bypass_semantic_supervisor')
+    supervisor = semantic.PersonBypassSemanticSupervisor.__new__(
+        semantic.PersonBypassSemanticSupervisor)
+    supervisor.bypass_permit = permits[-1]
+    supervisor.summary = summary_at(14.0, [])
+    supervisor.maximum_permit_age_s = .45
+    supervisor.maximum_target_error_m = .45
+    supervisor.bypass_maximum_forward_m = 8.
+    supervisor.bypass_maximum_lateral_m = 1.
+    supervisor.bypass_lateral_hysteresis_m = .25
+    accepted, observation = supervisor.validated_bypass(14.0)
+    assert accepted is not None and observation is None
+
+
+def test_bypass_candidate_keeps_committed_side_but_allows_clear_straight(monkeypatch):
+    module, Stamp, follower, _permits = bypass_fixture(monkeypatch)
+    follower.active_trajectory_permit = types.SimpleNamespace(active=True)
+    follower._committed_bypass_side = -1
+    follower.cloud = np.zeros((100, 3))
+    follower.cloud_stamp = Stamp(9.9)
+    follower.motion = types.SimpleNamespace(valid=True)
+    follower.minimum_person_bypass_turn_rps = .08
+    monkeypatch.setattr(
+        module, "make_raw_gate_candidate_veto", lambda *a, **k: (
+            lambda _v, _w: False))
+
+    veto = follower.planner_candidate_veto(
+        Stamp(10.0), module.GO_ROUND, lambda v, w: (v, w, 0.0))
+
+    assert not veto(.35, -.2)
+    assert not veto(.35, 0.0)
+    assert veto(.35, .2)
+
+
+def test_person_qualification_while_paused_does_not_send_motion(monkeypatch):
+    module, Stamp, follower, permits = bypass_fixture(monkeypatch)
+    # The real wrapper step must publish qualification even when the base
+    # hold ladder returns immediately, but must not activate a trajectory.
+    monkeypatch.setattr(module.DwaFollower, 'step', lambda self: None)
+    for i in range(18):
+        now = 10. + .2*i
+        monkeypatch.setattr(module.rospy.Time, 'now', lambda: Stamp(now))
+        follower.cluster_summary = summary_at(now, [recorded_side_person()])
+        follower.step()
+    assert any(p.active and p.track_id == 5584 for p in permits)
+    assert len(permits) == 18 and permits[-1].active
+    assert follower.active_trajectory_permit is None
+    assert follower.planner.max_speed == .8
+
+
+def test_semantic_only_person_reaches_dwa_with_geometry_and_precheck(monkeypatch):
+    _base_module, template, published, commanded = dwa_with([], monkeypatch)
+    module, Stamp, follower, _permits = bypass_fixture(monkeypatch)
+    follower.__dict__.update(template.__dict__)
+    follower.planner.max_speed = .8
+    reference_module = module.DwaFollower.step.__globals__['mpc_speed']
+    monkeypatch.setattr(reference_module, 'shaped_reference',
+                        lambda *a, **k: (np.array([.6,.6]), None))
+    assert qualify_bypass_fixture(follower, Stamp, start=96.8).active
+    monkeypatch.setattr(module.rospy.Time, 'now', lambda: Stamp(100.))
+    veto_calls = []
+    def candidate_veto(now, decision, command):
+        assert decision == module.GO_ROUND
+        assert follower.active_trajectory_permit.track_id == 5584
+        assert follower.planner.max_speed == .35
+        veto_calls.append(True)
+        return lambda v,w: False
+    follower.planner_candidate_veto = candidate_veto
+    follower.step()
+    assert veto_calls and len(follower.planner.calls) == 1
+    plan = follower.planner.calls[0]
+    assert plan['obstacles'] and callable(plan['candidate_veto'])
+    assert plan['speed_cap'] <= .6  # actual solver also enforces planner.max_speed
+    assert commanded and commanded[0] != 'STOP'
+    assert follower.planner.max_speed == .8  # temporary cap restored
 
 
 def test_a_gate_stall_is_named_rather_than_left_running(monkeypatch):
