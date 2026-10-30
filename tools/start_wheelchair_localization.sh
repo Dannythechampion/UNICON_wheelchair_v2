@@ -565,7 +565,7 @@ for i in $(seq 1 10); do
 done
 echo "  final-stage relay up - watch /tip_guard/status"
 if [ "$PROFILE" != "pursuit" ]; then
-  echo "  PROFILE=$PROFILE - simulation-only control law, never driven on the chair"
+  echo "  PROFILE=$PROFILE - $FOLLOWER_NODE, not the pure-pursuit follower"
   echo "  watch /waypoint_follower/status; see docs/runbooks/mpc-profile-ko.md"
 fi
 setsid nohup env $SINGLE_THREAD_ENV \

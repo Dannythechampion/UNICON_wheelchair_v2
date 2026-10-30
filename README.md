@@ -270,12 +270,17 @@ refuses an LFS pointer, so a missed pull stops the bring-up, not the stack after
 
 ### 2. At the chair (NUC)
 
+Step by step for a first-time operator, in Korean, with read-only checks before and after
+bring-up: [`docs/runbooks/route2-intern-dwa-ko.md`](docs/runbooks/route2-intern-dwa-ko.md).
+
 Operator aboard with a hand on the joystick for every step that can move the chair. Check the
 E-stop first: `/wheel_status` `data[1]` should toggle 65 ↔ 77.
 
 | Step | Command | What it does |
 | --- | --- | --- |
-| Bring up | `PROFILE=dwa ~/start_wheelchair_localization.sh` or `~/start_route2_intern.sh` | route2_intern map + D5 → D4 → A route, guards on (`start_route2_intern.sh` defaults to DWA). Leaves the follower **PAUSED** |
+| Check | `bash ~/wheelchair_deploys/current/source-linux/tools/route2_intern_check.sh pre` | Read-only: current deploy is verified, ships route2_intern, PCD hash and `~/` wrappers match |
+| Bring up | `~/start_route2_intern.sh` (or `~/start_wheelchair_localization.sh`) | route2_intern map + D5 → D4 → A route, guards on. Always DWA: the hybrid bring-up pins `PROFILE=dwa` and ends on `person_bypass_dwa_follower.py`. Leaves the follower **PAUSED** |
+| Check | `bash .../tools/route2_intern_check.sh running` | Read-only: follower is the DWA one, on this route, localization `TRACKING` |
 | Drive | `~/go.sh` | Starts the drive |
 | Mark | `~/mark.py <label>` | Optional: marks an arrival in the black box and `~/field_marks.log` |
 | Stop | `~/stop.sh` | Stops it, as does moving the joystick |
@@ -400,6 +405,7 @@ See [`contracts/wp0/A16-release-authority.yaml`](contracts/wp0/A16-release-autho
 - [Operator runbook](docs/operator_runbook.md)
 - [2026-08-02 field report](docs/2026-08-02-field-report.md)
 - [route2_intern map and D5 → A route (2026-10-28)](docs/2026-10-28-route2-intern-map-ko.md)
+- [route2_intern DWA drive, step by step (Korean)](docs/runbooks/route2-intern-dwa-ko.md)
 - [Debug and black-box bags](docs/debug_bags.md)
 - [Replay and offline mapping](docs/replay_and_mapping.md)
 - [Interfaces and ownership](docs/interfaces.md)
