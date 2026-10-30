@@ -78,6 +78,8 @@
 ## 실행
 
 NUC에서는 `~/start_route2_intern.sh`(또는 `~/start_wheelchair_localization.sh`) 하나로 된다.
+처음 주행하는 사람은 단계별 절차와 점검 스크립트가 있는
+[`runbooks/route2-intern-dwa-ko.md`](runbooks/route2-intern-dwa-ko.md)를 따른다.
 배포본 없이 체크아웃에서 직접 띄울 때는 지도 4개 변수를 함께 바꿔야 시작 스크립트가 받아들인다.
 
 ```bash
