@@ -123,8 +123,17 @@ def test_route2_start_points_at_assets_that_exist():
     for rel in ("maps/route2_intern_20261026/traj_lidar.txt",
                 "routes/20261028_route2_D5_to_A_waypoints.json",
                 "routes/20261028_route2_D5_to_A_safety_band.json",
+                "routes/20261030_route2_A_to_D5_waypoints.json",
+                "routes/20261030_route2_A_to_D5_safety_band.json",
                 "routes/route_2d_map_route2_D5_to_A.yaml"):
         assert (ROOT / rel).is_file(), rel
+
+
+def test_route2_keys_name_both_directions_on_one_mask():
+    env = script("route2_intern_env.sh")
+    assert 'stem="20261028_route2_D5_to_A"' in env
+    assert 'stem="20261030_route2_A_to_D5"' in env
+    assert env.count('mask="route_2d_map_route2_D5_to_A.yaml"') == 2
 
 
 def test_field_marks_reach_the_black_box():

@@ -20,6 +20,40 @@ SAFETY = importlib.util.module_from_spec(SAFETY_SPEC)
 SAFETY_SPEC.loader.exec_module(SAFETY)
 
 
+def test_route2_a_to_d5_is_d5_to_a_driven_backwards_on_the_same_ground():
+    routes = ROOT / "routes"
+    mask = routes / "route_2d_map_route2_D5_to_A.yaml"
+    forward = routes / "20261028_route2_D5_to_A_waypoints.json"
+    forward_band = routes / "20261028_route2_D5_to_A_safety_band.json"
+    backward = routes / "20261030_route2_A_to_D5_waypoints.json"
+    backward_band = routes / "20261030_route2_A_to_D5_safety_band.json"
+    binding = ASSETS.validate_asset_binding(backward, backward_band, mask)
+    assert binding["drivable_mask_sha256"] == ASSETS.validate_asset_binding(
+        forward, forward_band, mask)["drivable_mask_sha256"]
+
+    there = json.loads(forward.read_text(encoding="utf-8"))["waypoints"]
+    back = json.loads(backward.read_text(encoding="utf-8"))["waypoints"]
+    assert [(p["x"], p["y"]) for p in back] == \
+        [(p["x"], p["y"]) for p in reversed(there)]
+    for a, b in zip(back, reversed(there)):
+        turn = (a["yaw_deg"] - b["yaw_deg"]) % 360.0
+        assert turn == pytest.approx(180.0, abs=1e-3)
+
+    # Same limits either way, measured at every waypoint: reversing the
+    # heading flips the lateral sign, which the left/right swap undoes.
+    xy = [(p["x"], p["y"]) for p in back]
+    one = SAFETY.SafetyBand(forward_band)
+    two = SAFETY.SafetyBand(backward_band)
+    lat_1, lo_1, hi_1 = one.margins_many(xy)
+    lat_2, lo_2, hi_2 = two.margins_many(xy)
+    assert lat_2 == pytest.approx(-lat_1, abs=1e-6)
+    assert lo_2 == pytest.approx(-hi_1, abs=1e-6)
+    assert hi_2 == pytest.approx(-lo_1, abs=1e-6)
+    assert two.contains_many(xy).all()
+    assert two.route_centre_chord_violations() == \
+        sorted(len(one.xy) - 2 - i for i in one.route_centre_chord_violations())
+
+
 def test_shipped_v6_v8_assets_are_cryptographically_bound():
     binding = ASSETS.validate_asset_binding(
         ROOT / "routes" / "20260812_route_v6_v8_waypoints.json",

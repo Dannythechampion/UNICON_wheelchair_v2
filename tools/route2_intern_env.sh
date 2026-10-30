@@ -6,7 +6,8 @@
 #   REPO=<checkout> ROUTE2_KEY=D5_to_A . tools/route2_intern_env.sh
 #
 # REPO defaults to the checkout this file lives in. ROUTE2_KEY defaults to
-# D5_to_A, the only route on this map so far. Returns non-zero, with the
+# D5_to_A; A_to_D5 is the same line driven the other way, on the same mask
+# (tools/reverse_route_assets.py). Returns non-zero, with the
 # variables untouched, when the key is unknown or the PCD is missing, still a
 # Git LFS pointer, or does not match its SHA-256.
 
@@ -17,8 +18,10 @@ route2_intern_env() {
   case "$key" in
     D5_to_A)
       stem="20261028_route2_D5_to_A"; mask="route_2d_map_route2_D5_to_A.yaml" ;;
+    A_to_D5)
+      stem="20261030_route2_A_to_D5"; mask="route_2d_map_route2_D5_to_A.yaml" ;;
     *)
-      echo "ERROR: unknown route2_intern route '$key' (known: D5_to_A)" >&2
+      echo "ERROR: unknown route2_intern route '$key' (known: D5_to_A, A_to_D5)" >&2
       return 64 ;;
   esac
 

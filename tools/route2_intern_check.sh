@@ -51,13 +51,14 @@ deploy_checks() {
     REPO="$REPO" . "$REPO/tools/route2_intern_env.sh"
     ok "route2_intern map hash matches ($MAP_ID)"
     ok "route $(basename "$ROUTE")"
-    python3 - "$ROUTE" <<'EOF'
+    python3 - "$ROUTE" "$ROUTE2_KEY" <<'EOF'
 import json, sys
 w = json.load(open(sys.argv[1]))["waypoints"]
-print("  ..    start  x=%.1f y=%.1f heading %.0f deg   (D5)"
-      % (w[0]["x"], w[0]["y"], w[0]["yaw_deg"]))
-print("  ..    end    x=%.1f y=%.1f                 (A)   %d waypoints"
-      % (w[-1]["x"], w[-1]["y"], len(w)))
+start, end = sys.argv[2].split("_to_")
+print("  ..    start  x=%.1f y=%.1f heading %.0f deg   (%s)"
+      % (w[0]["x"], w[0]["y"], w[0]["yaw_deg"], start))
+print("  ..    end    x=%.1f y=%.1f                 (%s)   %d waypoints"
+      % (w[-1]["x"], w[-1]["y"], end, len(w)))
 EOF
   else
     bad "route2_intern_env.sh refused:"
