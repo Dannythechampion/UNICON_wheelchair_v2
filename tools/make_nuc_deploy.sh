@@ -51,7 +51,7 @@ ln -s "$D/source-linux/src/static_livox_localization" "$D/ws/src/static_livox_lo
 # ROS's setup scripts read unset variables.
 source /opt/ros/noetic/setup.bash
 cd "$D/ws"
-catkin config -q --extend "$EXTEND" \
+catkin config --extend "$EXTEND" \
   --cmake-args -DCMAKE_BUILD_TYPE=Release -DENABLE_FAST_GICP_CUDA=ON >/dev/null
 catkin build static_livox_localization --no-status 2>&1 | tail -3
 
