@@ -51,7 +51,7 @@ deploy_checks() {
     REPO="$REPO" . "$REPO/tools/route2_intern_env.sh"
     ok "route2_intern map hash matches ($MAP_ID)"
     ok "route $(basename "$ROUTE")"
-    python3 - "$ROUTE" "$ROUTE2_KEY" <<'EOF'
+    python3 - "$ROUTE" "${ROUTE2_KEY:-D5_to_A}" <<'EOF'
 import json, sys
 w = json.load(open(sys.argv[1]))["waypoints"]
 start, end = sys.argv[2].split("_to_")

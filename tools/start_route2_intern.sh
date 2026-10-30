@@ -20,7 +20,12 @@ set -eo pipefail
 KEY="${1:-D5_to_A}"
 # The checkout this script lives in, so a deploy starts on its own assets.
 SRC="${SRC:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-REPO="$SRC" ROUTE2_KEY="$KEY" . "$SRC/tools/route2_intern_env.sh" || exit $?
+# Exported, not prefixed onto the `.`: bash restores a prefix assignment once
+# the builtin returns, and ~/hybrid_current.sh sources route2_intern_env.sh
+# again further down - without the key in its environment it falls back to
+# D5_to_A and brings that route up whatever was asked for here.
+export ROUTE2_KEY="$KEY"
+REPO="$SRC" . "$SRC/tools/route2_intern_env.sh" || exit $?
 export PROFILE="${PROFILE:-dwa}"
 
 echo "=============================================================="

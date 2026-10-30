@@ -129,6 +129,14 @@ def test_route2_start_points_at_assets_that_exist():
         assert (ROOT / rel).is_file(), rel
 
 
+def test_route2_start_exports_the_key_to_the_bringup_it_execs():
+    # hybrid_current.sh re-sources route2_intern_env.sh; a key that only
+    # prefixed the `.` here is gone by then and D5_to_A comes up instead.
+    start = script("start_route2_intern.sh")
+    assert 'export ROUTE2_KEY="$KEY"' in start
+    assert 'ROUTE2_KEY="$KEY" .' not in start
+
+
 def test_route2_keys_name_both_directions_on_one_mask():
     env = script("route2_intern_env.sh")
     assert 'stem="20261028_route2_D5_to_A"' in env
