@@ -104,13 +104,19 @@ def test_route2_start_overrides_the_whole_map_identity_and_does_not_drive():
     """The start script refuses a partial map override; a route2 bringup that
     left one variable on the v9 default would localize against the wrong map."""
     start = script("start_route2_intern.sh")
+    env = script("route2_intern_env.sh")
+    # The NUC's hybrid_current.sh sources the same file, so the app and this
+    # wrapper cannot pick different halves of the set.
+    assert '. "$SRC/tools/route2_intern_env.sh"' in start
+    assert '. "$REPO/tools/route2_intern_env.sh"' in script("nuc_home/hybrid_current.sh")
     for var in ("MAP", "MAP_SHA256", "MAP_ID", "TRAJ", "TRAJ_SHA256",
-                "ROUTE", "BAND", "DRIVABLE_MASK"):
-        assert "export %s=" % var in start
-    assert "SAFETY_POLICIES" not in start.split("set -eo pipefail", 1)[1]
-    assert "waypoint_follower/start" not in start
-    assert "mode_cmd" not in start
-    assert "git lfs pull" in start
+                "ROUTE", "AUTO_INIT_ROUTE", "BAND", "DRIVABLE_MASK"):
+        assert "export %s=" % var in env
+    for text in (start.split("set -eo pipefail", 1)[1], env):
+        assert "SAFETY_POLICIES" not in text
+        assert "waypoint_follower/start" not in text
+        assert "mode_cmd" not in text
+    assert "git lfs pull" in env
 
 
 def test_route2_start_points_at_assets_that_exist():

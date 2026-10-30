@@ -151,10 +151,14 @@ Written into `left_corridor_m` / `right_corridor_m` rather than over `left_m`, b
 the speed policy that a 2.45 m kerb is 0.80 m away would pace the whole route for a fall that
 was never near.
 
-### route2_intern (2026-10-28)
+### route2_intern (2026-10-28) - the NUC's route since 2026-10-30
 
 A second map, separate from the merged 0707/0725 one: the 2026-10-16 route2 mapping drive
-(A 애지문 → D4 정몽구 → D5 제2공학관 → D4 → A) reprocessed with GLIM.
+(A 애지문 → D4 정몽구 → D5 제2공학관 → D4 → A) reprocessed with GLIM. Since 2026-10-30 it is what
+the chair drives: `~/hybrid_current.sh` takes the map, route, band and mask from
+[`tools/route2_intern_env.sh`](tools/route2_intern_env.sh) on any deploy that ships it, so the
+operator app's [로컬 켜기] / [주행 시작], `~/start_wheelchair_localization.sh`,
+`~/start_route2_intern.sh` and `~/go.sh` all use the same set.
 
 | | `maps/route2_intern_20261026/` + `routes/20261028_route2_D5_to_A_*` |
 | --- | --- |
@@ -162,7 +166,9 @@ A second map, separate from the merged 0707/0725 one: the 2026-10-16 route2 mapp
 | Route | D5 → D4 → A, 1,193 waypoints (0.2 m), 267.6 m, `chair_centre`, `builtin` |
 | Band / mask | 536 stations at 0.5 m; mask ±1.5 m to D4, ±2.0 m to A |
 | Driven autonomously | **No** - draft, first run aboard, joystick, low speed |
-| Started by | `tools/start_route2_intern.sh D5_to_A` (bringup defaults unchanged) |
+| Map identity | `MAP_ID=route2_intern_20261026`, PCD SHA-256 `e0809f29…f74432`, checked before start |
+| Started by | `~/start_wheelchair_localization.sh` or `~/start_route2_intern.sh` on the NUC |
+| Repo default | `tools/start_wheelchair_localization.sh` itself still defaults to the merged map and v9; the NUC wrappers override it |
 
 Destination coordinates, how the scans were registered to the map, and what has not been
 checked are in [`docs/2026-10-28-route2-intern-map-ko.md`](docs/2026-10-28-route2-intern-map-ko.md).
@@ -218,7 +224,34 @@ run is the only place their thresholds can be calibrated against the real thing.
 
 ## Running it
 
-### 1. Deploy (laptop)
+### NUC code (2026-10-30)
+
+The NUC does not run a checkout of this repository in place. It runs one deploy directory,
+`~/wheelchair_deploys/current` → `~/wheelchair_deploys/<name>`, switched with
+`bash ~/use_deploy.sh <name>`; the home wrappers `~/start_wheelchair_localization.sh`, `~/go.sh`
+and `~/stop.sh` all go through `~/hybrid_current.sh` into that deploy's `tools/hybrid.sh`.
+Copies of those wrappers are kept in [`tools/nuc_home/`](tools/nuc_home/).
+
+`main` now carries the code the NUC drove on until 2026-10-30: deploy
+`person-bypass-steering-d88f367-20260830` (`d88f367`, static-person bypass steering) plus the
+edits made on the NUC on 2026-08-31 and never committed until now (bicycle / person bypass
+hotfix in `person_bypass_dwa_follower.py`, `cluster_guard.py`, `person_bypass_policy.py`,
+`dwa_follower.py`, `activate_person_bypass.sh` and their tests).
+
+To deploy a commit of `main`, on the NUC:
+
+```bash
+bash tools/make_nuc_deploy.sh <commit> [name]   # from any checkout; clones <commit> into the deploy
+bash ~/use_deploy.sh <name>                      # then stop and start the stack from the app
+```
+
+`make_nuc_deploy.sh` clones the commit, pulls only the LFS maps, checks the route2_intern PCD
+hash, builds `static_livox_localization` (Release, CUDA fast_gicp), runs the package tests, and
+writes `OFFLINE_VERIFIED` only if they pass. It never switches `current` itself. Rolling back is
+`bash ~/use_deploy.sh person-bypass-steering-d88f367-20260830`; a deploy without
+`tools/route2_intern_env.sh` falls back to the merged map and the v9 route.
+
+### 1. Deploy (laptop, older flow)
 
 From a checkout of `main` with the merged-map volume attached:
 
@@ -231,14 +264,9 @@ tool owns the build space, and installs the field scripts into `$HOME` with chec
 verification. Those scripts live outside the checkout, which is how a stale copy once kept
 launching the previous week's route.
 
-The route2_intern map is in Git LFS, not on the volume. After a deploy, on the NUC:
-
-```bash
-cd ~/wheelchair_localization_src && git lfs pull
-```
-
-`start_route2_intern.sh` checks the PCD's SHA-256 and refuses an LFS pointer, so a missed
-`git lfs pull` stops here, not after the stack is up.
+The route2_intern map is in Git LFS, not on the volume. `make_nuc_deploy.sh` pulls it; for a
+plain checkout run `git lfs pull` in it. `route2_intern_env.sh` checks the PCD's SHA-256 and
+refuses an LFS pointer, so a missed pull stops the bring-up, not the stack after it is up.
 
 ### 2. At the chair (NUC)
 
@@ -247,20 +275,20 @@ E-stop first: `/wheel_status` `data[1]` should toggle 65 ↔ 77.
 
 | Step | Command | What it does |
 | --- | --- | --- |
-| Bring up | `~/start_route2_intern.sh D5_to_A` | route2_intern map + D5 → D4 → A route, DWA, guards on. Leaves the follower **PAUSED** |
+| Bring up | `PROFILE=dwa ~/start_wheelchair_localization.sh` or `~/start_route2_intern.sh` | route2_intern map + D5 → D4 → A route, guards on (`start_route2_intern.sh` defaults to DWA). Leaves the follower **PAUSED** |
 | Drive | `~/go.sh` | Starts the drive |
 | Mark | `~/mark.py <label>` | Optional: marks an arrival in the black box and `~/field_marks.log` |
 | Stop | `~/stop.sh` | Stops it, as does moving the joystick |
 
-`LATENCY_S` is not set by the wrapper, so the follower uses its 0.55 s default. Running with
-`LATENCY_S=0 ~/start_route2_intern.sh D5_to_A` is still an open comparison from the 10-16 run.
+`LATENCY_S` is not set by the wrappers, so the follower uses its 0.55 s default. Running with
+`LATENCY_S=0 ~/start_route2_intern.sh` is still an open comparison from the 10-16 run.
 
-To run on the previous map (merged 0707/0725 with the v9 route), bring it up without the
-wrapper:
+The route starts at D5 (제2공학관), and auto-init searches the whole map (`AUTO_INIT_GLOBAL_ONLY`).
+To run on the previous map (merged 0707/0725 with the v9 route) on the same deploy:
 
 ```bash
-PROFILE=dwa ~/start_wheelchair_localization.sh   # field default map and route
-~/trial_0727.sh                                   # 0727 localization trial, guards off
+ROUTE_SET=v9 PROFILE=dwa ~/start_wheelchair_localization.sh
+ROUTE_SET=v9 ~/go.sh
 ```
 
 `go.sh` refuses rather than starts if the follower is absent, the object tracker is silent, or

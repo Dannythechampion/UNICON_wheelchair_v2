@@ -4,7 +4,13 @@
 
 2026-10-16 route2 매핑 주행(애지문 A → 정몽구 D4 → 제2공학관 D5 → D4 → A)을 GLIM으로
 재처리한 새 지도와, 그 지도 위의 D5 → D4 → A 주행 자산이다. **아직 한 번도 자율 주행하지
-않은 초안**이며, 시작 스크립트의 기본값은 바꾸지 않았다(기존 v9 자산이 그대로 기본).
+않은 초안**이다.
+
+> 2026-10-30부터 NUC의 기본 경로다. `~/hybrid_current.sh`가 배포본의
+> `tools/route2_intern_env.sh`로 지도·경로·밴드·마스크를 한꺼번에 정하므로, 앱의 [로컬 켜기]와
+> `~/start_wheelchair_localization.sh`, `~/start_route2_intern.sh`가 모두 이 자산을 쓴다.
+> 이전 지도(merged 0707/0725 + v9)는 `ROUTE_SET=v9`. 저장소의
+> `tools/start_wheelchair_localization.sh` 자체 기본값은 그대로다.
 
 ## 파일
 
@@ -71,7 +77,8 @@
 
 ## 실행
 
-시작 스크립트는 지도 4개 변수를 함께 바꿔야 받아들인다.
+NUC에서는 `~/start_route2_intern.sh`(또는 `~/start_wheelchair_localization.sh`) 하나로 된다.
+배포본 없이 체크아웃에서 직접 띄울 때는 지도 4개 변수를 함께 바꿔야 시작 스크립트가 받아들인다.
 
 ```bash
 R=$HOME/wheelchair_localization_src
