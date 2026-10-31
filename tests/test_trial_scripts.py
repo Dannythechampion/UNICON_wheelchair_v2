@@ -16,6 +16,8 @@ import pytest
 
 ROOT = Path(__file__).parents[1]
 TOOLS = ROOT / "tools"
+ROUTE2_KEYS = ("D5_to_A", "A_to_D5", "D5_to_D4", "D4_to_D5", "D4_to_A",
+               "A_to_D4")
 
 
 def script(name):
@@ -123,8 +125,38 @@ def test_route2_start_points_at_assets_that_exist():
     for rel in ("maps/route2_intern_20261026/traj_lidar.txt",
                 "routes/20261028_route2_D5_to_A_waypoints.json",
                 "routes/20261028_route2_D5_to_A_safety_band.json",
-                "routes/route_2d_map_route2_D5_to_A.yaml"):
+                "routes/20261030_route2_A_to_D5_waypoints.json",
+                "routes/20261030_route2_A_to_D5_safety_band.json",
+                "routes/route_2d_map_route2_D5_to_A.yaml",
+                "routes/route_2d_map_route2_intern_20261031.yaml",
+                "routes/route_2d_map_route2_intern_20261031.pgm"):
         assert (ROOT / rel).is_file(), rel
+    for key in ROUTE2_KEYS:
+        for kind in ("waypoints", "safety_band"):
+            rel = "routes/20261031_route2_%s_%s.json" % (key, kind)
+            assert (ROOT / rel).is_file(), rel
+
+
+def test_route2_start_exports_the_key_to_the_bringup_it_execs():
+    # hybrid_current.sh re-sources route2_intern_env.sh; a key that only
+    # prefixed the `.` here is gone by then and D5_to_A comes up instead.
+    start = script("start_route2_intern.sh")
+    assert 'export ROUTE2_KEY="$KEY"' in start
+    assert 'ROUTE2_KEY="$KEY" .' not in start
+
+
+def test_route2_keys_name_both_directions_on_one_mask():
+    env = script("route2_intern_env.sh")
+    # The six A/D4/D5 keys share one stem pattern and one mask...
+    assert "    %s)\n" % "|".join(ROUTE2_KEYS) in env.replace("\r\n", "\n")
+    assert 'stem="20261031_route2_$key"; ' \
+        'mask="route_2d_map_route2_intern_20261031.yaml"' in env
+    # ...and the unsmoothed 10-28 pair stays on its own 10-28 mask.
+    assert 'stem="20261028_route2_D5_to_A"' in env
+    assert 'stem="20261030_route2_A_to_D5"' in env
+    assert env.count('mask="route_2d_map_route2_D5_to_A.yaml"') == 2
+    for key in ROUTE2_KEYS + ("D5_to_A_raw", "A_to_D5_raw"):
+        assert key in env.split("known:", 1)[1].split(")", 1)[0]
 
 
 def test_field_marks_reach_the_black_box():

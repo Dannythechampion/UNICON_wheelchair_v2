@@ -31,9 +31,14 @@ def _load_binary_xyzi(path):
             raise ValueError("fixed map PCD has no POINTS field: %s" % path)
         point_count = int(point_line.split()[1])
         payload = source.read()
-    if len(payload) != point_count * 16:
+    # A zero-filled tail past POINTS records is writer padding, read past the
+    # same way initial_pose_global_search.load_pcd_xyz and PCL read it.
+    expected_bytes = point_count * 16
+    if len(payload) < expected_bytes or any(payload[expected_bytes:]):
         raise ValueError("fixed map PCD payload size mismatch: %s" % path)
-    records = np.frombuffer(payload, dtype=np.float32).reshape(point_count, 4)
+    records = np.frombuffer(
+        payload, dtype=np.float32, count=point_count * 4
+    ).reshape(point_count, 4)
     xyz = records[:, :3]
     return xyz[np.isfinite(xyz).all(axis=1)]
 

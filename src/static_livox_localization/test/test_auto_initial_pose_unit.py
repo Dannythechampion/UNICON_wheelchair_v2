@@ -4,6 +4,7 @@ import math
 from pathlib import Path
 import sys
 
+import numpy as np
 import pytest
 
 
@@ -122,6 +123,54 @@ def test_global_fallback_rejects_nonbinary_pcd_with_typed_error(tmp_path):
         module.load_pcd_xyz(invalid)
 
     assert captured.value.reason == "unsupported_header"
+
+
+def write_binary_pcd(path, points, trailing=b""):
+    header = (
+        "# .PCD v0.7 - Point Cloud Data file format\n"
+        "VERSION 0.7\n"
+        "FIELDS x y z intensity\n"
+        "SIZE 4 4 4 4\n"
+        "TYPE F F F F\n"
+        "COUNT 1 1 1 1\n"
+        "WIDTH {n}\n"
+        "HEIGHT 1\n"
+        "VIEWPOINT 0 0 0 1 0 0 0\n"
+        "POINTS {n}\n"
+        "DATA binary\n"
+    ).format(n=len(points))
+    body = np.asarray(points, dtype=np.float32).tobytes()
+    path.write_bytes(header.encode("ascii") + body + trailing)
+    return path
+
+
+def test_global_fallback_ignores_trailing_zero_padding(tmp_path):
+    module = load_global_module()
+    points = [(1.0, 2.0, 3.0, 10.0), (-4.0, 5.5, 0.25, 20.0)]
+    # route2_intern.pcd carries exactly this much writer padding.
+    padded = write_binary_pcd(tmp_path / "padded.pcd", points, b"\0" * 3904)
+
+    loaded = module.load_pcd_xyz(padded)
+
+    assert loaded.tolist() == [[1.0, 2.0, 3.0], [-4.0, 5.5, 0.25]]
+
+
+@pytest.mark.parametrize(
+    "trailing", [b"\0\0\0\x01", None], ids=["nonzero_tail", "short"]
+)
+def test_global_fallback_still_rejects_a_payload_it_cannot_account_for(
+    tmp_path, trailing
+):
+    module = load_global_module()
+    points = [(1.0, 2.0, 3.0, 10.0), (-4.0, 5.5, 0.25, 20.0)]
+    path = write_binary_pcd(tmp_path / "bad.pcd", points, trailing or b"")
+    if trailing is None:
+        path.write_bytes(path.read_bytes()[:-8])
+
+    with pytest.raises(module.BinaryPcdError) as captured:
+        module.load_pcd_xyz(path)
+
+    assert captured.value.reason == "payload_size_mismatch"
 
 
 def test_handshake_rejects_stale_tracking_from_an_older_seed():

@@ -63,10 +63,17 @@ def load_pcd_xyz(path: Path) -> np.ndarray:
     except OSError as error:
         raise BinaryPcdError("unreadable_pcd", path) from error
 
+    # Trailing zero bytes past the declared points are writer padding, not
+    # data: route2_intern.pcd (GLIM, 2026-10-26) carries 3,904 of them, and
+    # PCL - which the localizer loads the same file with - reads POINTS
+    # records and ignores the rest. Anything non-zero there, or a payload
+    # short of POINTS, is still a file this does not understand.
     expected_bytes = point_count * 16
-    if len(payload) != expected_bytes:
+    if len(payload) < expected_bytes or any(payload[expected_bytes:]):
         raise BinaryPcdError("payload_size_mismatch", path)
-    records = np.frombuffer(payload, dtype=np.float32).reshape(point_count, 4)
+    records = np.frombuffer(
+        payload, dtype=np.float32, count=point_count * 4
+    ).reshape(point_count, 4)
     points = records[:, :3]
     return points[np.isfinite(points).all(axis=1)]
 
