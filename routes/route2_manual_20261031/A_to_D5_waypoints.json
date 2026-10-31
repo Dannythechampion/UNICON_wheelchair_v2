@@ -7848,7 +7848,7 @@
     "route_id": "manual_picks20261031:A_to_D5:5661b7dfbf82",
     "drivable_mask_sha256": "8f846b31cd654d5220ad204da9e9181ceb8d270c5356d58cf44bad8dcf7c72ac",
     "drivable_mask_yaml_sha256": "e2f11034c8cc4a290bb571b6d76b866e7cb5386aa6d391c30ec58ed148892851",
-    "safety_band_sha256": "d4ba990cb88f0ecf5409a4a8db254772032772e95038bf3e112cdf952a408902",
-    "route_content_sha256": "f60eab4ddac3ec47fdb90de8eff7cc345a30475ea15362acd9f9f10e9cfd4c0c"
+    "safety_band_sha256": "1cf44d6549337ebac48c3872f859c60f927a812d18e09d3bc9b46d5cfd56e713",
+    "route_content_sha256": "ebe047fbadcc41237c721f3fec7e833925edbb56f3112f33195feb2c4174bdf4"
   }
 }

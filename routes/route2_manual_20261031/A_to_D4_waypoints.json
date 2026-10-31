@@ -5292,7 +5292,7 @@
     "route_id": "manual_picks20261031:A_to_D4:a10dc62f6cb6",
     "drivable_mask_sha256": "8f846b31cd654d5220ad204da9e9181ceb8d270c5356d58cf44bad8dcf7c72ac",
     "drivable_mask_yaml_sha256": "e2f11034c8cc4a290bb571b6d76b866e7cb5386aa6d391c30ec58ed148892851",
-    "safety_band_sha256": "689951399e827c4b1c45d66ae25c69f0ba1d7c11dcb12b16e0109720953e8a52",
-    "route_content_sha256": "896dccd0bccb8340823d639a38fbe05a1b94f2ffb33cb0d4e2043c8b9da03e7b"
+    "safety_band_sha256": "96993232da54e764b4b5850a7b15fffa525223ef685d6d11344888e87007b21e",
+    "route_content_sha256": "238c5b8b70b7ee6b9ad62d38c73cf1b0bbbdf7363d33f9761f665b89b5aec6ee"
   }
 }
