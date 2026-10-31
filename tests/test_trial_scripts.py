@@ -145,6 +145,25 @@ def test_route2_start_exports_the_key_to_the_bringup_it_execs():
     assert 'ROUTE2_KEY="$KEY" .' not in start
 
 
+def test_route2_check_takes_the_key_the_chair_was_started_with():
+    # A fresh SSH shell has no ROUTE2_KEY, so `running` checked every
+    # non-default key against D5_to_A and failed a correct bring-up.
+    check = script("route2_intern_check.sh").replace("\r\n", "\n")
+    assert 'KEY_ARG="${2:-}"' in check
+    assert 'export ROUTE2_KEY="$KEY_ARG"' in check
+    assert "running) resolve_key; deploy_checks; running_checks ;;" in check
+    # Without it, the key comes from the follower's route, for every route
+    # file route2_intern_env.sh can hand out.
+    assert "rosparam get /waypoint_follower/route" in \
+        check.split("resolve_key() {", 1)[1]
+    env = script("route2_intern_env.sh")
+    for key in ROUTE2_KEYS:
+        assert 'stem="20261031_route2_$key"' in env
+    assert "20261031_route2_*_waypoints.json)" in check
+    assert "20261028_route2_D5_to_A_waypoints.json) echo D5_to_A_raw" in check
+    assert "20261030_route2_A_to_D5_waypoints.json) echo A_to_D5_raw" in check
+
+
 def test_route2_keys_name_both_directions_on_one_mask():
     env = script("route2_intern_env.sh")
     # The six A/D4/D5 keys share one stem pattern and one mask...

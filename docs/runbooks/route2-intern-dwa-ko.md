@@ -19,7 +19,7 @@ DWA로 주행할 수 있게 정리했다. 지도·경로를 만든 방법과 좌
 | 제어기 | DWA - `person_bypass_dwa_follower.py` (RTX/CuPy 가속, 정지한 사람 우회 포함) |
 | 기동 | NUC에서 `~/start_route2_intern.sh` |
 | 주행 / 정지 | `~/go.sh` / `~/stop.sh` (또는 조이스틱) |
-| 점검 | `tools/route2_intern_check.sh pre` / `running` (읽기만 함) |
+| 점검 | `tools/route2_intern_check.sh pre` / `running <키>` (읽기만 함) |
 
 ## 왜 DWA인가, 어디서 정해지나
 
@@ -144,8 +144,13 @@ install -m 755 $R/tools/nuc_home/*.sh ~/
 그다음 스택 점검:
 
 ```bash
-bash ~/wheelchair_deploys/current/source-linux/tools/route2_intern_check.sh running
+bash ~/wheelchair_deploys/current/source-linux/tools/route2_intern_check.sh running <키>
 ```
+
+`<키>`는 `~/start_route2_intern.sh`에 붙인 것과 같은 키다(예: `running D4_to_D5`). 기동 스크립트가
+export한 키는 그 프로세스 안에만 있어서, 새 SSH 창에서는 다시 알려 줘야 한다. 키를 빼면 지금
+돌고 있는 follower의 경로에서 키를 읽어 `[route key]` 줄에 `(from the running follower)`로 보여 준다.
+이것은 지금 무엇이 떠 있는지 보여 줄 뿐, 의도한 구간인지는 확인하지 못한다.
 
 아래가 모두 `OK`여야 한다.
 
