@@ -7,21 +7,65 @@
 #       before bring-up: which deploy is current, that it is verified and
 #       ships route2_intern, that the PCD hash matches, that the ~/ wrappers
 #       are the ones in tools/nuc_home/
-#   bash .../route2_intern_check.sh running
-#       after ~/start_route2_intern.sh, before ~/go.sh: that the follower is
-#       the DWA one (not pure pursuit), on this route, and localization is
-#       TRACKING
+#   bash .../route2_intern_check.sh running [KEY]
+#       after ~/start_route2_intern.sh [KEY], before ~/go.sh: that the
+#       follower is the DWA one (not pure pursuit), on route KEY, and
+#       localization is TRACKING
+#
+# KEY is the one given to start_route2_intern.sh (D4_to_D5, A_to_D5, ...).
+# It has to be given again here: the key start_route2_intern.sh exports lives
+# only in that process tree, and a fresh SSH shell would check against
+# D5_to_A. Without KEY, `running` takes it from the follower's route and says
+# so - that shows what is up, not that it is what was meant.
 #
 # go.sh repeats the motion-critical checks itself; this exists so a first-time
 # operator can see what is up before anyone presses [주행 시작].
 set -o pipefail
 
 MODE="${1:-pre}"
+KEY_ARG="${2:-}"
 DEPLOYS="${DEPLOYS:-$HOME/wheelchair_deploys}"
 FAILED=0
 ok()   { echo "  OK    $*"; }
 bad()  { echo "  FAIL  $*"; FAILED=$((FAILED + 1)); }
 note() { echo "  ..    $*"; }
+
+# The route file name -> its route2_intern_env.sh key, or nothing.
+route_key_of() {
+  local name
+  name="$(basename "$1")"
+  case "$name" in
+    20261028_route2_D5_to_A_waypoints.json) echo D5_to_A_raw ;;
+    20261030_route2_A_to_D5_waypoints.json) echo A_to_D5_raw ;;
+    20261031_route2_*_waypoints.json)
+      name="${name#20261031_route2_}"; echo "${name%_waypoints.json}" ;;
+  esac
+}
+
+resolve_key() {
+  echo "[route key]"
+  if [ -n "$KEY_ARG" ]; then
+    export ROUTE2_KEY="$KEY_ARG"
+    note "$ROUTE2_KEY (argument)"
+    return
+  fi
+  if [ -n "${ROUTE2_KEY:-}" ]; then
+    note "$ROUTE2_KEY (ROUTE2_KEY from the environment)"
+    return
+  fi
+  if [ "$MODE" = running ]; then
+    source /opt/ros/noetic/setup.bash >/dev/null 2>&1
+    export ROS_MASTER_URI="${ROS_MASTER_URI:-http://127.0.0.1:11311}"
+    local key
+    key="$(route_key_of "$(rosparam get /waypoint_follower/route 2>/dev/null)")"
+    if [ -n "$key" ]; then
+      export ROUTE2_KEY="$key"
+      note "$ROUTE2_KEY (from the running follower - pass the key you started with to check it)"
+      return
+    fi
+  fi
+  note "D5_to_A (default - pass the key you started with, e.g. running D4_to_D5)"
+}
 
 deploy_checks() {
   echo "[deploy]"
@@ -126,9 +170,9 @@ running_checks() {
 }
 
 case "$MODE" in
-  pre)     deploy_checks; [ -n "${REPO:-}" ] && wrapper_checks ;;
-  running) deploy_checks; running_checks ;;
-  *) echo "usage: $0 pre|running" >&2; exit 64 ;;
+  pre)     resolve_key; deploy_checks; [ -n "${REPO:-}" ] && wrapper_checks ;;
+  running) resolve_key; deploy_checks; running_checks ;;
+  *) echo "usage: $0 pre|running [KEY]" >&2; exit 64 ;;
 esac
 
 echo ""
