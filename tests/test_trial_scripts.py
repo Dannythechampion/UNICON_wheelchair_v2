@@ -133,8 +133,13 @@ def test_route2_start_points_at_assets_that_exist():
         assert (ROOT / rel).is_file(), rel
     for key in ROUTE2_KEYS:
         for kind in ("waypoints", "safety_band"):
-            rel = "routes/20261031_route2_%s_%s.json" % (key, kind)
-            assert (ROOT / rel).is_file(), rel
+            for rel in ("routes/20261031_route2_%s_%s.json" % (key, kind),
+                        "routes/route2_manual_20261031/%s_%s.json"
+                        % (key, kind)):
+                assert (ROOT / rel).is_file(), rel
+    for ext in ("yaml", "pgm"):
+        rel = "routes/route2_manual_20261031/common_drivable_mask." + ext
+        assert (ROOT / rel).is_file(), rel
 
 
 def test_route2_start_exports_the_key_to_the_bringup_it_execs():
@@ -143,6 +148,31 @@ def test_route2_start_exports_the_key_to_the_bringup_it_execs():
     start = script("start_route2_intern.sh")
     assert 'export ROUTE2_KEY="$KEY"' in start
     assert 'ROUTE2_KEY="$KEY" .' not in start
+
+
+def test_route2_start_asks_from_and_to_only_at_a_terminal():
+    start = script("start_route2_intern.sh").replace("\r\n", "\n")
+    assert "STATIONS=(A D4 D5)" in start
+    # `D4 D5` and `D4_to_D5` name the same route.
+    assert 'KEY="${1^^}_to_${2^^}"' in start
+    # The menu reads the terminal; with no terminal there is nobody to ask,
+    # and the key falls back to D5_to_A as before.
+    assert 'elif [ -t 0 ]; then\n  KEY="$(pick_key)" || exit 1\nelse\n' \
+        '  KEY=D5_to_A\nfi' in start
+    assert start.count("</dev/tty") >= 2
+    # The last destination is only offered, after the key was accepted.
+    body = start.split('. "$SRC/tools/route2_intern_env.sh" || exit $?', 1)
+    assert 'echo "$DEST" > "$LAST_FILE"' in body[1]
+    assert 'echo "$DEST" > "$LAST_FILE"' not in body[0]
+
+
+def test_route2_check_measures_the_chair_against_the_route_origin():
+    # Started at D4 on D5_to_A, the follower would join at D4 and drive D4->A.
+    check = script("route2_intern_check.sh")
+    running = check.split("running_checks() {", 1)[1]
+    assert "/fast_lio_icp/pose/pose/pose/position" in running
+    assert 'START_TOLERANCE_M="${START_TOLERANCE_M:-3.0}"' in check
+    assert 'bad "chair is ${2:-?} m from the route origin' in running
 
 
 def test_route2_check_takes_the_key_the_chair_was_started_with():
@@ -156,26 +186,29 @@ def test_route2_check_takes_the_key_the_chair_was_started_with():
     # file route2_intern_env.sh can hand out.
     assert "rosparam get /waypoint_follower/route" in \
         check.split("resolve_key() {", 1)[1]
-    env = script("route2_intern_env.sh")
-    for key in ROUTE2_KEYS:
-        assert 'stem="20261031_route2_$key"' in env
-    assert "20261031_route2_*_waypoints.json)" in check
+    assert "*/route2_manual_20261031/*_waypoints.json)" in check
+    assert 'echo "${name%_waypoints.json}_smooth"' in check
     assert "20261028_route2_D5_to_A_waypoints.json) echo D5_to_A_raw" in check
     assert "20261030_route2_A_to_D5_waypoints.json) echo A_to_D5_raw" in check
 
 
 def test_route2_keys_name_both_directions_on_one_mask():
-    env = script("route2_intern_env.sh")
-    # The six A/D4/D5 keys share one stem pattern and one mask...
-    assert "    %s)\n" % "|".join(ROUTE2_KEYS) in env.replace("\r\n", "\n")
-    assert 'stem="20261031_route2_$key"; ' \
+    env = script("route2_intern_env.sh").replace("\r\n", "\n")
+    # The six A/D4/D5 keys are the manual routes on their common mask...
+    assert "    %s)\n" % "|".join(ROUTE2_KEYS) in env
+    assert 'stem="route2_manual_20261031/$key"; ' \
+        'mask="route2_manual_20261031/common_drivable_mask.yaml"' in env
+    # ...the smoothed line is the same six with _smooth, on its own mask...
+    assert "    %s)\n" % "|".join(k + "_smooth" for k in ROUTE2_KEYS) in env
+    assert 'stem="20261031_route2_${key%_smooth}"; ' \
         'mask="route_2d_map_route2_intern_20261031.yaml"' in env
     # ...and the unsmoothed 10-28 pair stays on its own 10-28 mask.
     assert 'stem="20261028_route2_D5_to_A"' in env
     assert 'stem="20261030_route2_A_to_D5"' in env
     assert env.count('mask="route_2d_map_route2_D5_to_A.yaml"') == 2
-    for key in ROUTE2_KEYS + ("D5_to_A_raw", "A_to_D5_raw"):
-        assert key in env.split("known:", 1)[1].split(")", 1)[0]
+    known = env.split("known:", 1)[1].split(")", 1)[0]
+    for key in ROUTE2_KEYS + ("<key>_smooth", "D5_to_A_raw", "A_to_D5_raw"):
+        assert key in known
 
 
 def test_field_marks_reach_the_black_box():

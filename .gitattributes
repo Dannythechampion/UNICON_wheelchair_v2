@@ -21,3 +21,4 @@ maps/**/*.txt -text
 # Mask metadata is hashed into the route binding; a CRLF checkout of it on
 # Windows changes the SHA-256 and the binding no longer validates there.
 routes/route_2d_map_route2_*.yaml text eol=lf
+routes/route2_manual_*/*.yaml text eol=lf
