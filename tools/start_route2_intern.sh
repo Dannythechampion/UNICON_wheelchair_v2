@@ -10,6 +10,9 @@
 #   ./start_route2_intern.sh D5_to_A
 #   LATENCY_S=0 ./start_route2_intern.sh D5_to_A
 #   ./start_route2_intern.sh A_to_D5    # the same line from A, the other way
+#   ./start_route2_intern.sh D4_to_D5   # any of A, D4, D5 to any other:
+#                                       # D5_to_D4 D4_to_A A_to_D4 D4_to_D5
+#   ./start_route2_intern.sh D5_to_A_raw  # the unsmoothed 10-28 line
 #
 # The route has never been driven autonomously. Guards stay on
 # (SAFETY_POLICIES is not touched), the controller is DWA, and LATENCY_S is

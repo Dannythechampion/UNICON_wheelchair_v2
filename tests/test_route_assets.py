@@ -1,9 +1,12 @@
-import importlib.util
 import hashlib
+import importlib.util
 import json
+import math
 from pathlib import Path
 
+import numpy as np
 import pytest
+from PIL import Image
 
 ROOT = Path(__file__).parents[1]
 SCRIPT = (
@@ -52,6 +55,66 @@ def test_route2_a_to_d5_is_d5_to_a_driven_backwards_on_the_same_ground():
     assert two.contains_many(xy).all()
     assert two.route_centre_chord_violations() == \
         sorted(len(one.xy) - 2 - i for i in one.route_centre_chord_violations())
+
+
+ROUTE2_PAIRS = (("D5_to_A", "A_to_D5"), ("D5_to_D4", "D4_to_D5"),
+                ("D4_to_A", "A_to_D4"))
+
+
+def _route2(key):
+    routes = ROOT / "routes"
+    return (routes / ("20261031_route2_%s_waypoints.json" % key),
+            routes / ("20261031_route2_%s_safety_band.json" % key))
+
+
+def test_route2_segments_are_one_line_cut_at_d4_on_one_mask():
+    mask = ROOT / "routes" / "route_2d_map_route2_intern_20261031.yaml"
+    shas = set()
+    for forward_key, backward_key in ROUTE2_PAIRS:
+        forward, forward_band = _route2(forward_key)
+        backward, backward_band = _route2(backward_key)
+        shas.add(ASSETS.validate_asset_binding(
+            forward, forward_band, mask)["drivable_mask_sha256"])
+        shas.add(ASSETS.validate_asset_binding(
+            backward, backward_band, mask)["drivable_mask_sha256"])
+        there = json.loads(forward.read_text(encoding="utf-8"))["waypoints"]
+        back = json.loads(backward.read_text(encoding="utf-8"))["waypoints"]
+        assert [(p["x"], p["y"]) for p in back] == \
+            [(p["x"], p["y"]) for p in reversed(there)]
+        one = SAFETY.SafetyBand(forward_band)
+        two = SAFETY.SafetyBand(backward_band)
+        xy = [(p["x"], p["y"]) for p in back]
+        lat_1, lo_1, hi_1 = one.margins_many(xy)
+        lat_2, lo_2, hi_2 = two.margins_many(xy)
+        assert lat_2 == pytest.approx(-lat_1, abs=1e-6)
+        assert lo_2 == pytest.approx(-hi_1, abs=1e-6)
+        assert two.contains_many(xy).all()
+        assert one.route_centre_chord_violations() == []
+        assert two.route_centre_chord_violations() == []
+    assert len(shas) == 1
+
+    # D5->D4 then D4->A is D5->A, joined at the one shared D4 waypoint.
+    def xy(key):
+        return [(p["x"], p["y"]) for p in json.loads(
+            _route2(key)[0].read_text(encoding="utf-8"))["waypoints"]]
+    whole, head, tail = xy("D5_to_A"), xy("D5_to_D4"), xy("D4_to_A")
+    assert head[-1] == tail[0]
+    assert head + tail[1:] == whole
+    # D4 is the operator's 2026-10-31 choice, moved inwards by smoothing
+    # the bend; anything further is not that point.
+    assert math.dist(head[-1], (105.64, 60.00)) < 0.5
+
+
+def test_route2_segment_waypoints_lie_inside_the_mask():
+    image = np.array(Image.open(
+        ROOT / "routes" / "route_2d_map_route2_intern_20261031.pgm")) > 250
+    for key in ("D5_to_A",):
+        pts = np.array(
+            [[p["x"], p["y"]] for p in json.loads(
+                _route2(key)[0].read_text(encoding="utf-8"))["waypoints"]])
+        rows = np.rint(image.shape[0] - 1 - (pts[:, 1] + 108.8) / 0.1)
+        cols = np.rint((pts[:, 0] + 66.9) / 0.1)
+        assert image[rows.astype(int), cols.astype(int)].all()
 
 
 def test_shipped_v6_v8_assets_are_cryptographically_bound():

@@ -6,8 +6,13 @@
 #   REPO=<checkout> ROUTE2_KEY=D5_to_A . tools/route2_intern_env.sh
 #
 # REPO defaults to the checkout this file lives in. ROUTE2_KEY defaults to
-# D5_to_A; A_to_D5 is the same line driven the other way, on the same mask
-# (tools/reverse_route_assets.py). Returns non-zero, with the
+# D5_to_A. All six keys are one smoothed line cut at D4, each direction on
+# the same mask (tools/build_route2_intern_segments.py):
+#
+#   D5_to_A  A_to_D5  D5_to_D4  D4_to_D5  D4_to_A  A_to_D4
+#
+# D5_to_A_raw and A_to_D5_raw are the unsmoothed 10-28 line on the 10-28
+# mask, as driven on 10-30, kept for comparison. Returns non-zero, with the
 # variables untouched, when the key is unknown or the PCD is missing, still a
 # Git LFS pointer, or does not match its SHA-256.
 
@@ -16,12 +21,14 @@ route2_intern_env() {
   local key="${ROUTE2_KEY:-D5_to_A}"
   local stem mask
   case "$key" in
-    D5_to_A)
+    D5_to_A|A_to_D5|D5_to_D4|D4_to_D5|D4_to_A|A_to_D4)
+      stem="20261031_route2_$key"; mask="route_2d_map_route2_intern_20261031.yaml" ;;
+    D5_to_A_raw)
       stem="20261028_route2_D5_to_A"; mask="route_2d_map_route2_D5_to_A.yaml" ;;
-    A_to_D5)
+    A_to_D5_raw)
       stem="20261030_route2_A_to_D5"; mask="route_2d_map_route2_D5_to_A.yaml" ;;
     *)
-      echo "ERROR: unknown route2_intern route '$key' (known: D5_to_A, A_to_D5)" >&2
+      echo "ERROR: unknown route2_intern route '$key' (known: D5_to_A, A_to_D5, D5_to_D4, D4_to_D5, D4_to_A, A_to_D4, D5_to_A_raw, A_to_D5_raw)" >&2
       return 64 ;;
   esac
 

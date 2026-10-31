@@ -14,8 +14,8 @@ DWA로 주행할 수 있게 정리했다. 지도·경로를 만든 방법과 좌
 | 항목 | 값 |
 | --- | --- |
 | 지도 | `maps/route2_intern_20261026/route2_intern.pcd` (GLIM, Git LFS), 원점 = A 애지문 |
-| 경로 | `routes/20261028_route2_D5_to_A_*`, D5 제2공학관 → D4 정몽구 → A 애지문, 267.6 m |
-| 출발 자세 | 지도 좌표 (189.3, 49.6), 진행 방향 약 -168° (서쪽, 제2공학관 앞에서 D4 쪽을 본다) |
+| 경로 | `routes/20261031_route2_<키>_*`, A 애지문 · D4 정몽구 · D5 제2공학관 사이 6개 구간 (아래 표). 기본 키 `D5_to_A`, 264.7 m |
+| 출발 자세 | `D5_to_A`: 지도 좌표 (189.3, 49.6), 진행 방향 약 167° (서쪽, 제2공학관 앞에서 D4 쪽을 본다). 다른 키는 아래 표 |
 | 제어기 | DWA - `person_bypass_dwa_follower.py` (RTX/CuPy 가속, 정지한 사람 우회 포함) |
 | 기동 | NUC에서 `~/start_route2_intern.sh` |
 | 주행 / 정지 | `~/go.sh` / `~/stop.sh` (또는 조이스틱) |
@@ -40,6 +40,31 @@ DWA로 주행할 수 있게 정리했다. 지도·경로를 만든 방법과 좌
 그래서 NUC 래퍼로 띄우면 `PROFILE`을 따로 주지 않아도 항상 DWA다. 기동 로그에 나오는
 `PROFILE=dwa` 줄은 그 결과다. 띄운 뒤 실제로 DWA인지는 아래 4단계의 `running` 점검이
 `person_bypass_dwa_follower.py` 프로세스와 `/waypoint_follower/route` 파라미터로 확인한다.
+
+## 구간 고르기
+
+6개 구간은 모두 같은 선 하나(10-16 D5→A 주행선을 2026-10-31에 스무딩하고 J 코너를 둥글게 한 것)를
+D4에서 잘라 만들었고, 마스크도 하나(`route_2d_map_route2_intern_20261031`)다. 키를 `~/start_route2_intern.sh`
+뒤에 붙인다. 만든 방법: `tools/build_route2_intern_segments.py`.
+
+| 키 | 출발 → 도착 | 길이 | 출발할 때 세우는 방향 |
+| --- | --- | --- | --- |
+| `D5_to_A` | D5 → A (D4 통과) | 264.7 m | 서쪽 (D4 쪽) |
+| `A_to_D5` | A → D5 (D4 통과) | 264.7 m | 동남동 (J 쪽) |
+| `D5_to_D4` | D5 → D4 | 85.8 m | 서쪽 |
+| `D4_to_D5` | D4 → D5 | 85.8 m | 북동쪽, 출발 1~2 m 안에 우회전 |
+| `D4_to_A` | D4 → A | 179.0 m | 남서쪽 |
+| `A_to_D4` | A → D4 | 179.0 m | 동남동 |
+
+```bash
+~/start_route2_intern.sh D4_to_D5
+```
+
+- D4 정지점은 (105.86, 59.75)다. 정몽구 표시점(104.0, 61.7)에서 2.7 m 떨어진 경로 위의 점이고, 굽은 곳 꼭짓점 바로 앞이다.
+- D4에서 **반대 방향으로 다시 출발할 때**(예: `A_to_D4` 다음 `D4_to_A`) 휠체어는 제자리 회전을 하지 않는다(바퀴 데드밴드).
+  0.35 m/s, 반경 약 0.7 m 원호로 돌아서 옆으로 약 1.4 m, 앞으로 약 0.7 m를 쓴다. 앞이 막혀 있으면
+  safety gate가 출발을 막으므로, 조이스틱으로 다음 구간 방향으로 돌려 세운 뒤 출발하는 것이 확실하다.
+- `D5_to_A_raw`, `A_to_D5_raw`는 스무딩 전 10-28 선과 10-28 마스크다. 10-30 주행과 비교할 때만 쓴다.
 
 ## 0. 준비물
 
@@ -104,7 +129,7 @@ install -m 755 $R/tools/nuc_home/*.sh ~/
 ~/start_route2_intern.sh
 ```
 
-배너에 `route2_intern D5_to_A`, `map route2_intern_20261026`, `profile dwa`가 나온다.
+배너에 `route2_intern <키>`(키 없이 띄우면 `D5_to_A`), `map route2_intern_20261026`, `profile dwa`가 나온다.
 팔로워는 **PAUSED** 상태로 뜬다. 앱의 [로컬 켜기]를 눌러도 같은 것이 뜬다.
 
 자동 초기화는 지도 전체를 탐색한다(`AUTO_INIT_GLOBAL_ONLY=true`). `TRACKING`이 될 때까지
@@ -125,7 +150,7 @@ bash ~/wheelchair_deploys/current/source-linux/tools/route2_intern_check.sh runn
 아래가 모두 `OK`여야 한다.
 
 - `follower is person_bypass_dwa_follower.py (DWA)` - pure pursuit가 아니라 DWA
-- `follower route is 20261028_route2_D5_to_A_waypoints.json`
+- `follower route is 20261031_route2_<키>_waypoints.json`
 - `localization TRACKING`
 - `object tracking publishing`
 
