@@ -9,8 +9,9 @@
 #       are the ones in tools/nuc_home/
 #   bash .../route2_intern_check.sh running [KEY]
 #       after ~/start_route2_intern.sh [KEY], before ~/go.sh: that the
-#       follower is the DWA one (not pure pursuit), on route KEY, and
-#       localization is TRACKING
+#       follower is the DWA one (not pure pursuit), on route KEY,
+#       localization is TRACKING, and the chair stands within
+#       START_TOLERANCE_M (3 m) of that route's origin
 #
 # KEY is the one given to start_route2_intern.sh (D4_to_D5, A_to_D5, ...).
 # It has to be given again here: the key start_route2_intern.sh exports lives
@@ -24,6 +25,8 @@ set -o pipefail
 
 MODE="${1:-pre}"
 KEY_ARG="${2:-}"
+# How far from the route's first waypoint the chair may stand at `running`.
+START_TOLERANCE_M="${START_TOLERANCE_M:-3.0}"
 DEPLOYS="${DEPLOYS:-$HOME/wheelchair_deploys}"
 FAILED=0
 ok()   { echo "  OK    $*"; }
@@ -34,11 +37,15 @@ note() { echo "  ..    $*"; }
 route_key_of() {
   local name
   name="$(basename "$1")"
+  case "$1" in
+    */route2_manual_20261031/*_waypoints.json)
+      echo "${name%_waypoints.json}"; return ;;
+  esac
   case "$name" in
     20261028_route2_D5_to_A_waypoints.json) echo D5_to_A_raw ;;
     20261030_route2_A_to_D5_waypoints.json) echo A_to_D5_raw ;;
     20261031_route2_*_waypoints.json)
-      name="${name#20261031_route2_}"; echo "${name%_waypoints.json}" ;;
+      name="${name#20261031_route2_}"; echo "${name%_waypoints.json}_smooth" ;;
   esac
 }
 
@@ -98,7 +105,7 @@ deploy_checks() {
     python3 - "$ROUTE" "${ROUTE2_KEY:-D5_to_A}" <<'EOF'
 import json, sys
 w = json.load(open(sys.argv[1]))["waypoints"]
-start, end = sys.argv[2].split("_to_")
+start, _, end = sys.argv[2].split("_")[:3]
 print("  ..    start  x=%.1f y=%.1f heading %.0f deg   (%s)"
       % (w[0]["x"], w[0]["y"], w[0]["yaw_deg"], start))
 print("  ..    end    x=%.1f y=%.1f                 (%s)   %d waypoints"
@@ -158,7 +165,35 @@ running_checks() {
   state="$(timeout 3 rostopic echo -n1 /fast_lio_icp/localization_diagnostics 2>/dev/null \
     | grep -m1 'message:' | sed 's/.*message: *//' | tr -d '"')"
   [ "$state" = TRACKING ] && ok "localization TRACKING" \
-    || bad "localization is '${state:-silent}' - wait, or re-seat at D5 and restart"
+    || bad "localization is '${state:-silent}' - wait, or re-seat at the origin and restart"
+
+  # The chair has to be at the route's origin. Started at D4 on D5_to_A, the
+  # follower finds the nearest waypoint - D4 is on that line - and drives
+  # D4->A, which nobody chose. The pose is the LiDAR body, ~0.5 m from the
+  # chair centre the waypoints are written for: well inside the tolerance.
+  local pos
+  pos="$(timeout 3 rostopic echo -n1 /fast_lio_icp/pose/pose/pose/position 2>/dev/null \
+    | awk '$1 == "x:" {x = $2} $1 == "y:" {y = $2} END {if (x != "" && y != "") print x, y}')"
+  if [ -z "$pos" ] || [ -z "${ROUTE:-}" ]; then
+    bad "no pose on /fast_lio_icp/pose - cannot tell whether the chair is at the origin"
+  else
+    local verdict
+    # shellcheck disable=SC2086
+    verdict="$(python3 - "$ROUTE" "${ROUTE2_KEY:-D5_to_A}" $pos "$START_TOLERANCE_M" <<'EOF'
+import json, math, sys
+route, key, x, y, tol = sys.argv[1], sys.argv[2], float(sys.argv[3]), float(sys.argv[4]), float(sys.argv[5])
+w = json.load(open(route))["waypoints"]
+d = math.hypot(x - w[0]["x"], y - w[0]["y"])
+print("%s %.1f %s" % ("OK" if d <= tol else "FAR", d, key.split("_")[0]))
+EOF
+)"
+    set -- $verdict
+    if [ "$1" = OK ]; then
+      ok "chair is $2 m from the route origin ($3)"
+    else
+      bad "chair is ${2:-?} m from the route origin (${3:-?}) - wrong origin? restart with the route from where it stands"
+    fi
+  fi
 
   timeout 3 rostopic echo -n1 /perception/objects_summary >/dev/null 2>&1 \
     && ok "object tracking publishing" || bad "/perception/objects_summary is silent"

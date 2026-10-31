@@ -279,8 +279,8 @@ E-stop first: `/wheel_status` `data[1]` should toggle 65 ↔ 77.
 | Step | Command | What it does |
 | --- | --- | --- |
 | Check | `bash ~/wheelchair_deploys/current/source-linux/tools/route2_intern_check.sh pre` | Read-only: current deploy is verified, ships route2_intern, PCD hash and `~/` wrappers match |
-| Bring up | `~/start_route2_intern.sh` (or `~/start_wheelchair_localization.sh`) | route2_intern map + D5 → D4 → A route, guards on. Always DWA: the hybrid bring-up pins `PROFILE=dwa` and ends on `person_bypass_dwa_follower.py`. Leaves the follower **PAUSED** |
-| Check | `bash .../tools/route2_intern_check.sh running <KEY>` | Read-only: follower is the DWA one, on route `<KEY>` (the one given to `start_route2_intern.sh`; omitted, it is read from the follower), localization `TRACKING` |
+| Bring up | `~/start_route2_intern.sh` (asks from/to among A, D4, D5; or `~/start_route2_intern.sh D4 D5`; `~/start_wheelchair_localization.sh` = D5 → A) | route2_intern map + the 2026-10-31 manual route (`routes/route2_manual_20261031/`), guards on. Always DWA: the hybrid bring-up pins `PROFILE=dwa` and ends on `person_bypass_dwa_follower.py`. Leaves the follower **PAUSED** |
+| Check | `bash .../tools/route2_intern_check.sh running <KEY>` | Read-only: follower is the DWA one, on route `<KEY>` (the one given to `start_route2_intern.sh`; omitted, it is read from the follower), localization `TRACKING`, chair within 3 m of the route origin |
 | Drive | `~/go.sh` | Starts the drive |
 | Mark | `~/mark.py <label>` | Optional: marks an arrival in the black box and `~/field_marks.log` |
 | Stop | `~/stop.sh` | Stops it, as does moving the joystick |

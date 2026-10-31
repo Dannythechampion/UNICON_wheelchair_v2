@@ -117,6 +117,29 @@ def test_route2_segment_waypoints_lie_inside_the_mask():
         assert image[rows.astype(int), cols.astype(int)].all()
 
 
+def test_route2_manual_routes_are_bound_to_one_mask_and_meet_at_stations():
+    # The keys route2_intern_env.sh hands out by default since 2026-10-31.
+    manual = ROOT / "routes" / "route2_manual_20261031"
+    mask = manual / "common_drivable_mask.yaml"
+    shas, ends = set(), {}
+    for forward_key, backward_key in ROUTE2_PAIRS:
+        for key in (forward_key, backward_key):
+            route = manual / ("%s_waypoints.json" % key)
+            band = manual / ("%s_safety_band.json" % key)
+            shas.add(ASSETS.validate_asset_binding(
+                route, band, mask)["drivable_mask_sha256"])
+            w = json.loads(route.read_text(encoding="utf-8"))["waypoints"]
+            start, _, end = key.split("_")
+            ends.setdefault(start, set()).add((w[0]["x"], w[0]["y"]))
+            ends.setdefault(end, set()).add((w[-1]["x"], w[-1]["y"]))
+    assert len(shas) == 1
+    # Every route from or to a station starts or ends on the same point, so
+    # the origin check in route2_intern_check.sh means one place per station.
+    assert sorted(ends) == ["A", "D4", "D5"]
+    for station, points in ends.items():
+        assert len(points) == 1, (station, points)
+
+
 def test_shipped_v6_v8_assets_are_cryptographically_bound():
     binding = ASSETS.validate_asset_binding(
         ROOT / "routes" / "20260812_route_v6_v8_waypoints.json",

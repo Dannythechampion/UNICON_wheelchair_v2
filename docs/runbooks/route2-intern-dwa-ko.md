@@ -14,8 +14,8 @@ DWA로 주행할 수 있게 정리했다. 지도·경로를 만든 방법과 좌
 | 항목 | 값 |
 | --- | --- |
 | 지도 | `maps/route2_intern_20261026/route2_intern.pcd` (GLIM, Git LFS), 원점 = A 애지문 |
-| 경로 | `routes/20261031_route2_<키>_*`, A 애지문 · D4 정몽구 · D5 제2공학관 사이 6개 구간 (아래 표). 기본 키 `D5_to_A`, 264.7 m |
-| 출발 자세 | `D5_to_A`: 지도 좌표 (189.3, 49.6), 진행 방향 약 167° (서쪽, 제2공학관 앞에서 D4 쪽을 본다). 다른 키는 아래 표 |
+| 경로 | `routes/route2_manual_20261031/<키>_*` (2026-10-31 수동 경로), A 애지문 · D4 정몽구 · D5 제2공학관 사이 6개 구간 (아래 표). 기본 키 `D5_to_A`, 260.4 m |
+| 출발 자세 | `D5_to_A`: 지도 좌표 (189.2, 49.6), 진행 방향 약 174° (서쪽, 제2공학관 앞에서 D4 쪽을 본다). 다른 키는 아래 표 |
 | 제어기 | DWA - `person_bypass_dwa_follower.py` (RTX/CuPy 가속, 정지한 사람 우회 포함) |
 | 기동 | NUC에서 `~/start_route2_intern.sh` |
 | 주행 / 정지 | `~/go.sh` / `~/stop.sh` (또는 조이스틱) |
@@ -43,24 +43,51 @@ DWA로 주행할 수 있게 정리했다. 지도·경로를 만든 방법과 좌
 
 ## 구간 고르기
 
-6개 구간은 모두 같은 선 하나(10-16 D5→A 주행선을 2026-10-31에 스무딩하고 J 코너를 둥글게 한 것)를
-D4에서 잘라 만들었고, 마스크도 하나(`route_2d_map_route2_intern_20261031`)다. 키를 `~/start_route2_intern.sh`
-뒤에 붙인다. 만든 방법: `tools/build_route2_intern_segments.py`.
+NUC에서 키 없이 띄우면 출발지와 목적지를 번호로 묻는다.
+
+```bash
+~/start_route2_intern.sh
+```
+
+```
+(지난번에 띄운 경로의 도착지: D4 정몽구)
+출발지 - 휠체어가 지금 있는 곳
+  1) A  애지문
+  2) D4 정몽구   [Enter]
+  3) D5 제2공학관
+> 
+목적지
+  1) A  애지문
+  2) D5 제2공학관
+> 2
+D4 정몽구 -> D5 제2공학관 (D4_to_D5) 로 띄웁니다. [Enter=예, n=취소]
+```
+
+- 출발지의 [Enter] 기본값은 **지난번에 띄운 경로의 도착지**(`~/.route2_last_destination`)다. 그 주행을
+  끝까지 마쳤다면 휠체어가 있을 곳이라는 추측일 뿐 측정이 아니다. 실제 위치는 4단계 점검의
+  `chair is ... m from the route origin`이 잰다.
+- 물어보지 않고 바로 띄우려면 `~/start_route2_intern.sh D4 D5` 또는 `~/start_route2_intern.sh D4_to_D5`.
+- 터미널이 아닌 곳(앱의 [로컬 켜기] 등)에서 띄우면 묻지 않고 `D5_to_A`로 뜬다.
+
+6개 구간은 iamshy95가 2026-10-31에 지도 위에서 직접 찍은 수동 경로(`routes/route2_manual_20261031/`)이고,
+마스크는 6개가 함께 쓰는 `common_drivable_mask` 하나다.
 
 | 키 | 출발 → 도착 | 길이 | 출발할 때 세우는 방향 |
 | --- | --- | --- | --- |
-| `D5_to_A` | D5 → A (D4 통과) | 264.7 m | 서쪽 (D4 쪽) |
-| `A_to_D5` | A → D5 (D4 통과) | 264.7 m | 동남동 (J 쪽) |
-| `D5_to_D4` | D5 → D4 | 85.8 m | 서쪽 |
-| `D4_to_D5` | D4 → D5 | 85.8 m | 북동쪽, 출발 1~2 m 안에 우회전 |
-| `D4_to_A` | D4 → A | 179.0 m | 남서쪽 |
-| `A_to_D4` | A → D4 | 179.0 m | 동남동 |
+| `D5_to_A` | D5 → A (D4 통과) | 260.4 m | 서쪽 (D4 쪽) |
+| `A_to_D5` | A → D5 (D4 통과) | 260.4 m | 동쪽 (J 쪽) |
+| `D5_to_D4` | D5 → D4 | 88.4 m | 서쪽 |
+| `D4_to_D5` | D4 → D5 | 88.4 m | 북동쪽 |
+| `D4_to_A` | D4 → A | 175.2 m | 남남서쪽 |
+| `A_to_D4` | A → D4 | 175.2 m | 동쪽 |
 
-```bash
-~/start_route2_intern.sh D4_to_D5
-```
-
-- D4 정지점은 (105.86, 59.75)다. 정몽구 표시점(104.0, 61.7)에서 2.7 m 떨어진 경로 위의 점이고, 굽은 곳 꼭짓점 바로 앞이다.
+- 세 지점의 좌표: A (1.25, -0.11), D4 (102.84, 57.23), D5 (189.21, 49.56). 같은 지점에서 출발하거나
+  그 지점에 도착하는 구간은 모두 같은 점을 쓴다.
+- 수동 경로의 safety band는 사람이 찍은 기하 마스크에서 나왔다(`UNVERIFIED: geometric mask, NOT physical
+  curb clearance`). 연석까지의 실제 거리는 재지 않았으므로 처음 달리는 구간은 조이스틱에 손을 올리고 달린다.
+- `<키>_smooth`(예: `D4_to_D5_smooth`)는 10-28 선을 스무딩해 D4에서 자른 이전 6개 구간이다
+  (`routes/20261031_route2_*`, `tools/build_route2_intern_segments.py`). 이 구간의 D4 정지점은 (105.86, 59.75)로,
+  수동 경로의 D4와 3.8 m 떨어져 있다.
 - D4에서 **반대 방향으로 다시 출발할 때**(예: `A_to_D4` 다음 `D4_to_A`) 휠체어는 제자리 회전을 하지 않는다(바퀴 데드밴드).
   0.35 m/s, 반경 약 0.7 m 원호로 돌아서 옆으로 약 1.4 m, 앞으로 약 0.7 m를 쓴다. 앞이 막혀 있으면
   safety gate가 출발을 막으므로, 조이스틱으로 다음 구간 방향으로 돌려 세운 뒤 출발하는 것이 확실하다.
@@ -129,7 +156,8 @@ install -m 755 $R/tools/nuc_home/*.sh ~/
 ~/start_route2_intern.sh
 ```
 
-배너에 `route2_intern <키>`(키 없이 띄우면 `D5_to_A`), `map route2_intern_20261026`, `profile dwa`가 나온다.
+출발지·목적지를 고르면(위 "구간 고르기") 배너에 `route2_intern <키>`, `map route2_intern_20261026`,
+`profile dwa`가 나온다.
 팔로워는 **PAUSED** 상태로 뜬다. 앱의 [로컬 켜기]를 눌러도 같은 것이 뜬다.
 
 자동 초기화는 지도 전체를 탐색한다(`AUTO_INIT_GLOBAL_ONLY=true`). `TRACKING`이 될 때까지
@@ -155,8 +183,11 @@ export한 키는 그 프로세스 안에만 있어서, 새 SSH 창에서는 다�
 아래가 모두 `OK`여야 한다.
 
 - `follower is person_bypass_dwa_follower.py (DWA)` - pure pursuit가 아니라 DWA
-- `follower route is 20261031_route2_<키>_waypoints.json`
+- `follower route is <키>_waypoints.json`
 - `localization TRACKING`
+- `chair is ... m from the route origin (<출발지>)` - 휠체어가 고른 출발지에서 3 m 안에 있다.
+  FAIL이면 출발지를 잘못 고른 것이다. 예를 들어 D4에 있는데 `D5_to_A`로 띄우면 follower는 D4 근처
+  지점에 붙어서 아무도 고르지 않은 D4→A를 달린다. `~/stop.sh` 후 지금 있는 곳에서 출발하는 구간으로 다시 띄운다.
 - `object tracking publishing`
 
 `follower status`는 `PAUSED`류가 정상이다. 하나라도 FAIL이면 주행하지 않는다.
