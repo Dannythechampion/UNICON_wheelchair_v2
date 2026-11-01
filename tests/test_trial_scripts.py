@@ -121,6 +121,12 @@ def test_route2_start_overrides_the_whole_map_identity_and_does_not_drive():
     assert "git lfs pull" in env
 
 
+def test_route2_fix_threshold_is_set_by_the_start_station():
+    env = script("route2_intern_env.sh").replace("\r\n", "\n")
+    assert "    D5_*) export MIN_REFINED_SCORE=0.55 ;;\n" in env
+    assert "    *)    export MIN_REFINED_SCORE=0.65 ;;\n" in env
+
+
 def test_route2_start_points_at_assets_that_exist():
     for rel in ("maps/route2_intern_20261026/traj_lidar.txt",
                 "routes/20261028_route2_D5_to_A_waypoints.json",

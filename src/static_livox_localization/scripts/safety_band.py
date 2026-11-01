@@ -163,6 +163,12 @@ class SafetyBand:
         usable_left, usable_right, narrow = [], [], []
         edge_left, edge_right, sev_left, sev_right = [], [], [], []
         corridor_yielded = []
+        # An operator-set ceiling for a stretch the geometry cannot see:
+        # a speed bump or a corner the chair is known to struggle with. The
+        # band is the only asset that moves along the route with the chair,
+        # so the ceiling lives on its stations. Absent means no ceiling.
+        self.speed_cap = np.array([
+            float(s.get("max_speed_mps", np.inf)) for s in data["stations"]])
         for s in data["stations"]:
             kind_left = s.get("left_kind")
             kind_right = s.get("right_kind")
@@ -415,6 +421,10 @@ class SafetyBand:
     def is_narrow(self, point):
         d = np.linalg.norm(self.xy - point, axis=1)
         return bool(self.narrow[int(np.argmin(d))])
+
+    def station_speed_cap(self, point):
+        d = np.linalg.norm(self.xy - point, axis=1)
+        return float(self.speed_cap[int(np.argmin(d))])
 
     def chord_is_contained(self, start, target, grace=0.0, spacing=0.25):
         """Require every sampled point on a straight drive chord to be safe."""

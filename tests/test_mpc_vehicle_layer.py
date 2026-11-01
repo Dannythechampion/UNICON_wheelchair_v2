@@ -207,6 +207,18 @@ def test_reference_is_flat_across_the_horizon(band):
     assert len(set(np.round(v_ref, 9))) == 1
 
 
+def test_station_speed_cap_is_honoured_and_braked_for_ahead(band):
+    """A max_speed_mps on a run of stations caps the reference there, and
+    the horizon starts braking for it before the chair arrives."""
+    band.speed_cap[100:120] = 0.40
+    try:
+        assert mpc_speed.policy_speed(band, band.xy[110]) <= 0.40
+        assert mpc_speed.horizon_speed(band, band.xy[98]) <= 0.40
+        assert mpc_speed.policy_speed(band, band.xy[60]) > 0.40
+    finally:
+        band.speed_cap[:] = np.inf
+
+
 def test_lookahead_reports_the_worst_station_it_reaches(band):
     """The point verdict may not see what the horizon will arrive at."""
     worst = min(mpc_speed.horizon_speed(band, p) for p in band.xy[::5])
