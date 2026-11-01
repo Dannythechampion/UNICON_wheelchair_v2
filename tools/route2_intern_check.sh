@@ -120,7 +120,7 @@ EOF
 wrapper_checks() {
   echo "[home wrappers]"
   local f
-  for f in start_wheelchair_localization.sh start_route2_intern.sh go.sh stop.sh hybrid_current.sh; do
+  for f in start_wheelchair_localization.sh start_route2_intern.sh go.sh stop.sh stop_stack.sh hybrid_current.sh; do
     if [ ! -f "$HOME/$f" ]; then
       bad "~/$f missing - install -m 755 $REPO/tools/nuc_home/$f ~/"
     elif cmp -s "$HOME/$f" "$REPO/tools/nuc_home/$f"; then
