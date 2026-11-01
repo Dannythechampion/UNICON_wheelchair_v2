@@ -140,6 +140,27 @@ def test_route2_manual_routes_are_bound_to_one_mask_and_meet_at_stations():
         assert len(points) == 1, (station, points)
 
 
+def test_route2_manual_j_corner_is_filleted_and_slow_through_the_bump():
+    # 2026-10-31: both A -> D4 drives crawled the J kink (R 0.9 m in the
+    # picks) and run 1 wheelied to +35 degrees on the 6 cm bump at
+    # (88.3, -12.3) with 0.8 m/s still commanded.
+    manual = ROOT / "routes" / "route2_manual_20261031"
+    corner, bump = np.array([87.4, -21.0]), np.array([88.3, -12.3])
+    for key in ("A_to_D4", "A_to_D5", "D4_to_A", "D5_to_A"):
+        w = json.loads((manual / ("%s_waypoints.json" % key))
+                       .read_text(encoding="utf-8"))["waypoints"]
+        xy = np.array([[p["x"], p["y"]] for p in w])
+        step = np.diff(xy, axis=0)
+        heading = np.unwrap(np.arctan2(step[:, 1], step[:, 0]))
+        near = np.linalg.norm(xy[1:-1] - corner, axis=1) < 6.0
+        kappa = np.abs(np.diff(heading)) / np.linalg.norm(step[1:], axis=1)
+        assert 1.0 / kappa[near].max() > 2.4, key
+        band = SAFETY.SafetyBand(manual / ("%s_safety_band.json" % key))
+        for point in (corner, bump):
+            assert band.station_speed_cap(point) == pytest.approx(0.40), key
+        assert np.isinf(band.station_speed_cap(band.xy[0]))
+
+
 def test_shipped_v6_v8_assets_are_cryptographically_bound():
     binding = ASSETS.validate_asset_binding(
         ROOT / "routes" / "20260812_route_v6_v8_waypoints.json",

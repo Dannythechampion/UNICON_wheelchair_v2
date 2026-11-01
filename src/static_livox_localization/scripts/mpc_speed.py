@@ -310,6 +310,7 @@ def policy_speed(band, point, pitch_rad=0.0, degraded=False,
     that means is shaped_reference's job, not this one's.
     """
     limit = hazard_speed(band.hazard_clearance(point))
+    limit = min(limit, band.station_speed_cap(point))
     limit = min(limit, slope_speed_limit(pitch_rad))
     if degraded:
         limit = min(limit, SLOPE_SPEED)

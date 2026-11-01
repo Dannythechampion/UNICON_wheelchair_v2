@@ -1,6 +1,6 @@
 {
   "frame": "map",
-  "route_id": "manual_picks20261031:D4_to_A:cf427b830dba",
+  "route_id": "manual_picks20261031-jfillet:D4_to_A:cf427b830dba",
   "drivable_mask_sha256": "8f846b31cd654d5220ad204da9e9181ceb8d270c5356d58cf44bad8dcf7c72ac",
   "drivable_mask_yaml_sha256": "e2f11034c8cc4a290bb571b6d76b866e7cb5386aa6d391c30ec58ed148892851",
   "station_spacing_m": 0.5,
@@ -1888,7 +1888,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
     },
     {
       "x": 88.139,
@@ -1901,7 +1902,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
     },
     {
       "x": 88.177,
@@ -1914,7 +1916,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
     },
     {
       "x": 88.207,
@@ -1927,7 +1930,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
     },
     {
       "x": 88.235,
@@ -1940,7 +1944,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
     },
     {
       "x": 88.263,
@@ -1953,7 +1958,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
     },
     {
       "x": 88.287,
@@ -1966,7 +1972,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
     },
     {
       "x": 88.309,
@@ -1979,7 +1986,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
     },
     {
       "x": 88.326,
@@ -1992,7 +2000,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
     },
     {
       "x": 88.339,
@@ -2005,7 +2014,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
     },
     {
       "x": 88.344,
@@ -2018,7 +2028,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
     },
     {
       "x": 88.341,
@@ -2031,7 +2042,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
     },
     {
       "x": 88.326,
@@ -2044,7 +2056,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
     },
     {
       "x": 88.306,
@@ -2057,7 +2070,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
     },
     {
       "x": 88.287,
@@ -2070,7 +2084,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
     },
     {
       "x": 88.274,
@@ -2083,7 +2098,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
     },
     {
       "x": 88.279,
@@ -2096,7 +2112,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
     },
     {
       "x": 88.31,
@@ -2109,189 +2126,204 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
     },
     {
-      "x": 88.356,
-      "y": -18.075,
-      "heading_deg": -84.792,
-      "left_m": 0.54,
-      "right_m": 1.72,
+      "x": 88.346,
+      "y": -18.017,
+      "heading_deg": -86.779,
+      "left_m": 0.561,
+      "right_m": 1.644,
       "left_drop_m": 0.0,
       "right_drop_m": 0.0,
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
     },
     {
-      "x": 88.401,
-      "y": -18.573,
-      "heading_deg": -84.128,
-      "left_m": 0.566,
-      "right_m": 1.813,
+      "x": 88.374,
+      "y": -18.517,
+      "heading_deg": -86.78,
+      "left_m": 0.631,
+      "right_m": 1.774,
       "left_drop_m": 0.0,
       "right_drop_m": 0.0,
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
     },
     {
-      "x": 88.458,
-      "y": -19.07,
-      "heading_deg": -83.831,
-      "left_m": 0.586,
-      "right_m": 1.919,
+      "x": 88.402,
+      "y": -19.017,
+      "heading_deg": -86.779,
+      "left_m": 0.601,
+      "right_m": 1.804,
       "left_drop_m": 0.0,
       "right_drop_m": 0.0,
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
     },
     {
-      "x": 88.508,
-      "y": -19.567,
-      "heading_deg": -87.075,
-      "left_m": 0.611,
-      "right_m": 2.015,
+      "x": 88.431,
+      "y": -19.517,
+      "heading_deg": -87.127,
+      "left_m": 0.681,
+      "right_m": 1.934,
       "left_drop_m": 0.0,
       "right_drop_m": 0.0,
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
     },
     {
-      "x": 88.509,
-      "y": -20.067,
-      "heading_deg": -92.603,
-      "left_m": 0.675,
-      "right_m": 2.083,
-      "left_drop_m": 0.0,
-      "right_drop_m": 0.0,
-      "left_kind": "manual_boundary_unverified",
-      "right_kind": "manual_boundary_unverified",
-      "left_rise_m": 0.0,
-      "right_rise_m": 0.0
-    },
-    {
-      "x": 88.463,
-      "y": -20.565,
-      "heading_deg": -97.799,
-      "left_m": 0.766,
-      "right_m": 2.228,
-      "left_drop_m": 0.0,
-      "right_drop_m": 0.0,
-      "left_kind": "manual_boundary_unverified",
-      "right_kind": "manual_boundary_unverified",
-      "left_rise_m": 0.0,
-      "right_rise_m": 0.0
-    },
-    {
-      "x": 88.373,
-      "y": -21.056,
-      "heading_deg": -111.768,
-      "left_m": 0.958,
-      "right_m": 2.243,
-      "left_drop_m": 0.0,
-      "right_drop_m": 0.0,
-      "left_kind": "manual_boundary_unverified",
-      "right_kind": "manual_boundary_unverified",
-      "left_rise_m": 0.0,
-      "right_rise_m": 0.0
-    },
-    {
-      "x": 88.102,
-      "y": -21.469,
-      "heading_deg": -132.9,
-      "left_m": 1.658,
-      "right_m": 2.267,
-      "left_drop_m": 0.0,
-      "right_drop_m": 0.0,
-      "left_kind": "manual_boundary_unverified",
-      "right_kind": "manual_boundary_unverified",
-      "left_rise_m": 0.0,
-      "right_rise_m": 0.0
-    },
-    {
-      "x": 87.707,
-      "y": -21.774,
-      "heading_deg": -148.53,
-      "left_m": 2.299,
-      "right_m": 2.353,
-      "left_drop_m": 0.0,
-      "right_drop_m": 0.0,
-      "left_kind": "manual_boundary_unverified",
-      "right_kind": "manual_boundary_unverified",
-      "left_rise_m": 0.0,
-      "right_rise_m": 0.0
-    },
-    {
-      "x": 87.255,
-      "y": -21.987,
-      "heading_deg": -158.059,
-      "left_m": 2.246,
-      "right_m": 2.197,
-      "left_drop_m": 0.0,
-      "right_drop_m": 0.0,
-      "left_kind": "manual_boundary_unverified",
-      "right_kind": "manual_boundary_unverified",
-      "left_rise_m": 0.0,
-      "right_rise_m": 0.0
-    },
-    {
-      "x": 86.782,
-      "y": -22.147,
-      "heading_deg": -163.822,
-      "left_m": 2.202,
+      "x": 88.446,
+      "y": -20.017,
+      "heading_deg": -93.849,
+      "left_m": 0.761,
       "right_m": 1.944,
       "left_drop_m": 0.0,
       "right_drop_m": 0.0,
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
     },
     {
-      "x": 86.296,
-      "y": -22.266,
-      "heading_deg": -168.332,
-      "left_m": 2.166,
-      "right_m": 1.779,
+      "x": 88.377,
+      "y": -20.512,
+      "heading_deg": -107.421,
+      "left_m": 0.871,
+      "right_m": 2.044,
       "left_drop_m": 0.0,
       "right_drop_m": 0.0,
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
     },
     {
-      "x": 85.803,
-      "y": -22.349,
-      "heading_deg": -171.753,
-      "left_m": 2.148,
-      "right_m": 1.718,
+      "x": 88.21,
+      "y": -20.983,
+      "heading_deg": -116.481,
+      "left_m": 1.231,
+      "right_m": 2.024,
       "left_drop_m": 0.0,
       "right_drop_m": 0.0,
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
     },
     {
-      "x": 85.307,
-      "y": -22.409,
-      "heading_deg": -173.604,
-      "left_m": 2.15,
-      "right_m": 1.721,
+      "x": 87.953,
+      "y": -21.412,
+      "heading_deg": -130.068,
+      "left_m": 1.801,
+      "right_m": 2.024,
       "left_drop_m": 0.0,
       "right_drop_m": 0.0,
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
+    },
+    {
+      "x": 87.616,
+      "y": -21.781,
+      "heading_deg": -139.129,
+      "left_m": 2.331,
+      "right_m": 2.014,
+      "left_drop_m": 0.0,
+      "right_drop_m": 0.0,
+      "left_kind": "manual_boundary_unverified",
+      "right_kind": "manual_boundary_unverified",
+      "left_rise_m": 0.0,
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
+    },
+    {
+      "x": 87.211,
+      "y": -22.075,
+      "heading_deg": -152.708,
+      "left_m": 2.181,
+      "right_m": 1.994,
+      "left_drop_m": 0.0,
+      "right_drop_m": 0.0,
+      "left_kind": "manual_boundary_unverified",
+      "right_kind": "manual_boundary_unverified",
+      "left_rise_m": 0.0,
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
+    },
+    {
+      "x": 86.757,
+      "y": -22.284,
+      "heading_deg": -161.767,
+      "left_m": 2.131,
+      "right_m": 1.984,
+      "left_drop_m": 0.0,
+      "right_drop_m": 0.0,
+      "left_kind": "manual_boundary_unverified",
+      "right_kind": "manual_boundary_unverified",
+      "left_rise_m": 0.0,
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
+    },
+    {
+      "x": 86.27,
+      "y": -22.396,
+      "heading_deg": -175.133,
+      "left_m": 2.021,
+      "right_m": 2.004,
+      "left_drop_m": 0.0,
+      "right_drop_m": 0.0,
+      "left_kind": "manual_boundary_unverified",
+      "right_kind": "manual_boundary_unverified",
+      "left_rise_m": 0.0,
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
+    },
+    {
+      "x": 85.771,
+      "y": -22.427,
+      "heading_deg": -177.912,
+      "left_m": 2.081,
+      "right_m": 1.824,
+      "left_drop_m": 0.0,
+      "right_drop_m": 0.0,
+      "left_kind": "manual_boundary_unverified",
+      "right_kind": "manual_boundary_unverified",
+      "left_rise_m": 0.0,
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
+    },
+    {
+      "x": 85.27,
+      "y": -22.445,
+      "heading_deg": -177.926,
+      "left_m": 2.161,
+      "right_m": 1.744,
+      "left_drop_m": 0.0,
+      "right_drop_m": 0.0,
+      "left_kind": "manual_boundary_unverified",
+      "right_kind": "manual_boundary_unverified",
+      "left_rise_m": 0.0,
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
     },
     {
       "x": 84.809,
@@ -2304,7 +2336,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
     },
     {
       "x": 84.311,
@@ -2317,7 +2350,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
     },
     {
       "x": 83.811,
@@ -2330,7 +2364,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
     },
     {
       "x": 83.311,
@@ -2343,7 +2378,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
     },
     {
       "x": 82.812,
@@ -2356,7 +2392,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.4
     },
     {
       "x": 82.313,
