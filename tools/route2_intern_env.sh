@@ -67,6 +67,17 @@ route2_intern_env() {
   export BAND="$repo/routes/${stem}_safety_band.json"
   export DRIVABLE_MASK="$repo/routes/$mask"
   export ROUTE2_KEY="$key"
+
+  # Global-fix acceptance, by the station the chair starts at. Replayed on
+  # the five 10-31 D5 bags, the right place there scores 0.55-0.60 (north
+  # and west; vegetation and passers-by the map does not hold) and the best
+  # wrong place 0.31-0.43, so D5 gets 0.55. Everywhere else stays at the
+  # 0.65 the field ran. route2_intern_check.sh still fails a fix more than
+  # START_TOLERANCE_M from the route origin.
+  case "$key" in
+    D5_*) export MIN_REFINED_SCORE=0.55 ;;
+    *)    export MIN_REFINED_SCORE=0.65 ;;
+  esac
 }
 
 route2_intern_env
