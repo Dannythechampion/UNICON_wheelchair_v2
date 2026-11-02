@@ -9,6 +9,7 @@ moving. stop has to work when everything else has failed, which means
 checking nothing at all.
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -125,6 +126,53 @@ def test_route2_fix_threshold_is_set_by_the_start_station():
     env = script("route2_intern_env.sh").replace("\r\n", "\n")
     assert "    D5_*) export MIN_REFINED_SCORE=0.55 ;;\n" in env
     assert "    *)    export MIN_REFINED_SCORE=0.65 ;;\n" in env
+
+
+def _keep_branch(text):
+    return text.split('if [ "$KEEP_LOCALIZATION" = "1" ]; then\n  keep_localization_check', 1)[1] \
+        .split('\nfi\nif [ "$SHADOW_QA" != "1" ] && [ "$KEEP_LOCALIZATION" != "1" ]; then', 1)[0]
+
+
+def test_the_next_leg_keeps_localization_and_sweeps_only_the_route_layer():
+    start = script("start_wheelchair_localization.sh").replace("\r\n", "\n")
+    keep = _keep_branch(start)
+    # The localization stack is what the leg must not lose.
+    for kept in ("livox_ros_driver2", "fastlio_mapping", "moving_icp_localizer",
+                 "'[r]oslaunch'", "'[r]viz'"):
+        assert kept not in keep.split("for pattern in", 1)[1], kept
+    # ...and everything route-bound still goes, so no follower survives on
+    # the previous leg's route.
+    for gone in ("[w]aypoint_follower", "[d]wa_follower", "[o]bstacle_clusters",
+                 "[r]oute_identity_publisher", "[s]afety_gate", "[r]osbag record"):
+        assert gone in keep, gone
+    # Stages 2-5 (lidar, FAST-LIO, localizer, global fix) are skipped whole.
+    skipped = start.split('if [ "$KEEP_LOCALIZATION" = "1" ]; then\n# Stages 2-5', 1)[1]
+    else_part = skipped.split("\nelse\n", 1)[1].split('echo "LOCALIZED"\nfi\n', 1)[0]
+    for stage in ('echo "[2/5] livox driver"', 'echo "[3/5] FAST-LIO',
+                  'echo "[4/5] localization', 'echo "[5/7] waiting for TRACKING'):
+        assert stage in else_part, stage
+    # The full sweep the tests and stop_stack.sh parse is still the first
+    # unindented loop, and the keep sweep is not one.
+    first = re.search(r"^for pattern in (.+?); do$", start, re.M).group(1)
+    assert "'[m]oving_icp_localizer'" in first
+
+
+def test_keeping_localization_is_refused_unless_tracking_on_this_map_and_parked():
+    start = script("start_wheelchair_localization.sh").replace("\r\n", "\n")
+    check = start.split("keep_localization_check() {", 1)[1].split("\n}\n", 1)[0]
+    assert "rosparam get /moving_icp_localizer/map_id" in check
+    assert "rosparam get /moving_icp_localizer/map_sha256" in check
+    assert "grep -q TRACKING" in check
+    assert "auto_initialization_verified" in check
+    assert '""|HOLD:*) ;;' in check
+    assert "keep_localization_check || exit 11" in start
+
+
+def test_route2_start_keeps_localization_after_the_first_bring_up():
+    start = script("start_route2_intern.sh").replace("\r\n", "\n")
+    assert 'if [ -z "${KEEP_LOCALIZATION+x}" ]; then' in start
+    assert "pgrep -f '[m]oving_icp_localizer'" in start
+    assert start.index("export KEEP_LOCALIZATION=1") < start.index("exec ./start_wheelchair_localization.sh")
 
 
 def test_route2_start_points_at_assets_that_exist():

@@ -8,6 +8,9 @@ Usage: start_wheelchair_localization.sh
 
 Environment: SHADOW_QA=1 starts sensors, perception, and localization only.
 PROFILE=pursuit|mpc|dwa selects the controller for a normal field startup.
+KEEP_LOCALIZATION=1 restarts only the route layer on a stack that is already
+TRACKING on the same map - the next leg - and leaves the lidar, FAST-LIO and
+the localizer running.
 No command-line arguments other than --help are accepted.
 EOF
   exit 0
@@ -159,6 +162,23 @@ case "$SHADOW_QA" in
   0|1) ;;
   *) echo "ERROR: SHADOW_QA must be 0 or 1" >&2; exit 64 ;;
 esac
+# The next leg of a multi-leg drive (A->D4, then D4->D5) changes only the
+# route, band and mask. Nothing below the route layer reads them: the
+# localizer holds the map, and auto_initial_pose, the only node that took the
+# route, has exited once it fixed. Restarting the lidar and FAST-LIO for a new
+# route throws a good fix away for a fresh global search from a standstill -
+# the D5 one passes at 0.55-0.60 against a 0.55 threshold. With
+# KEEP_LOCALIZATION=1 stages 2-5 are skipped and the sweep spares them; it is
+# refused unless the running localizer is TRACKING on this very map.
+KEEP_LOCALIZATION="${KEEP_LOCALIZATION:-0}"
+case "$KEEP_LOCALIZATION" in
+  0|1) ;;
+  *) echo "ERROR: KEEP_LOCALIZATION must be 0 or 1" >&2; exit 64 ;;
+esac
+if [ "$KEEP_LOCALIZATION" = "1" ] && [ "$SHADOW_QA" = "1" ]; then
+  echo "ERROR: KEEP_LOCALIZATION=1 and SHADOW_QA=1 cannot be combined" >&2
+  exit 64
+fi
 case "$PROFILE" in
   pursuit) FOLLOWER_NODE=waypoint_follower.py ;;
   mpc)     FOLLOWER_NODE=mpc_follower.py ;;
@@ -276,7 +296,67 @@ echo "[1/5] cleaning old processes"
 # its publishers. moving_icp_localizer is the one that matters: two of them
 # alive means /fast_lio_icp/pose has two publishers and the follower believes
 # whichever arrives last.
-if [ "$SHADOW_QA" != "1" ]; then
+keep_localization_check() {
+  local bad="" want got state
+  for want in '[l]ivox_ros_driver2' '[f]astlio_mapping' '[m]oving_icp_localizer'; do
+    pgrep -f "$want" >/dev/null 2>&1 || bad="$bad ${want//[\[\]]/} not running;"
+  done
+  if [ "$VN_IMU_KEEP" = "1" ]; then
+    pgrep -f '[v]ectornav' >/dev/null 2>&1 || bad="$bad VN_IMU=1 but vectornav not running;"
+  fi
+  got="$(rosparam get /moving_icp_localizer/map_id 2>/dev/null || true)"
+  [ "$got" = "$MAP_ID" ] || bad="$bad localizer map_id '$got' is not '$MAP_ID';"
+  got="$(rosparam get /moving_icp_localizer/map_sha256 2>/dev/null || true)"
+  [ "$got" = "$MAP_SHA256" ] || bad="$bad localizer map SHA-256 differs;"
+  state="$(timeout 3 rostopic echo -n1 \
+    /fast_lio_icp/localization_diagnostics/status[0]/message 2>/dev/null | head -1 || true)"
+  echo "$state" | grep -q TRACKING || bad="$bad localization is '${state:-silent}', not TRACKING;"
+  [ "$(rosparam get /fast_lio_icp/auto_initialization_verified 2>/dev/null || echo false)" = "true" ] ||
+    bad="$bad the initial fix was never verified;"
+  # Restarting the follower under a moving chair is a stop nobody asked for.
+  # Every follower reports HOLD:<reason> whenever it is not commanding motion
+  # (DONE on arrival, PAUSED before go.sh); anything else is a drive.
+  state="$(timeout 3 rostopic echo -n1 /waypoint_follower/status/data 2>/dev/null | head -1 || true)"
+  state="${state//\"/}"
+  case "$state" in
+    ""|HOLD:*) ;;
+    *) bad="$bad the follower is driving ($state) - stop.sh first;" ;;
+  esac
+  if [ -n "$bad" ]; then
+    echo "REFUSE: KEEP_LOCALIZATION=1 needs a parked chair already localized on $MAP_ID:" >&2
+    echo "$bad" | tr ';' '\n' | sed '/^ *$/d; s/^ */  /' >&2
+    echo "  For a full restart (new global fix): KEEP_LOCALIZATION=0" >&2
+    return 1
+  fi
+}
+VN_IMU_KEEP="${VN_IMU:-0}"
+if [ "$KEEP_LOCALIZATION" = "1" ]; then
+  keep_localization_check || exit 11
+  echo "  keeping lidar, FAST-LIO and the localizer - TRACKING on $MAP_ID"
+  # The route layer only: everything the sweep below kills except what
+  # stages 2-5 start. wheel.launch is the one roslaunch child here, so it is
+  # named rather than taking every roslaunch wrapper with it. stop_watchdog
+  # is the node the full sweep is known to miss (tools/stop_stack.sh).
+  for pattern in '[r]oslaunch base_model' '[r]osbag record' '[a]uto_initial_pose' \
+                 '[s]afety_gate' '[t]ip_guard' '[w]aypoint_follower' '[m]pc_follower' \
+                 '[d]wa_follower' '[o]bstacle_clusters' '[r]oute_identity_publisher' \
+                 '[w]heel_cmd' '[s]top_watchdog'; do
+    pkill -f "$pattern" 2>/dev/null || true
+  done
+  for _ in $(seq 1 10); do
+    pgrep -f '[s]afety_gate|[o]bstacle_clusters|[w]aypoint_follower|[d]wa_follower|[m]pc_follower' >/dev/null 2>&1 || break
+    sleep 1
+  done
+  survivors="$(pgrep -af '[s]afety_gate|[o]bstacle_clusters|[w]aypoint_follower|[d]wa_follower|[m]pc_follower' 2>/dev/null || true)"
+  if [ -n "$survivors" ]; then
+    echo "  sweep: forcing $(echo "$survivors" | wc -l) survivor(s)" >&2
+    echo "$survivors" >&2
+    pkill -9 -f '[s]afety_gate|[o]bstacle_clusters|[w]aypoint_follower|[d]wa_follower|[m]pc_follower' 2>/dev/null || true
+    sleep 1
+  fi
+  sleep 2
+fi
+if [ "$SHADOW_QA" != "1" ] && [ "$KEEP_LOCALIZATION" != "1" ]; then
 for pattern in '[r]oslaunch' '[r]osbag record' '[f]astlio_mapping' '[a]uto_initial_pose' '[s]afety_gate' '[t]ip_guard' '[w]aypoint_follower' '[m]pc_follower' '[d]wa_follower' '[o]bstacle_clusters' '[r]oute_identity_publisher' '[m]oving_icp_localizer' '[b]ounded_cloud_preview' '[m]ap_preview_publisher' '[l]ivox_ros_driver2' '[v]ectornav' '[w]heel_cmd' '[l]ocalization_state_marker' '[r]eference_marker' '[r]viz'; do
   pkill -f "$pattern" 2>/dev/null || true
 done
@@ -303,6 +383,17 @@ if ! pgrep -f '[r]osmaster' >/dev/null; then
 fi
 rosparam set /use_sim_time false
 
+if [ "$KEEP_LOCALIZATION" = "1" ]; then
+# Stages 2-5 are what keep_localization_check just found running. The body
+# frame has to be the one that stack was started with, which is the IMU it
+# runs on.
+echo "[2-5/5] kept: livox, FAST-LIO, localization - no new global fix"
+case "$VN_IMU_KEEP" in
+  1) BODY_FRAME_PROFILE="vn100" ;;
+  *) BODY_FRAME_PROFILE="builtin" ;;
+esac
+echo "LOCALIZED (kept)"
+else
 echo "[2/5] livox driver"
 source "$HOME/ws_livox/devel/setup.bash"
 $DETACH roslaunch livox_ros_driver2 msg_MID360.launch \
@@ -494,6 +585,7 @@ if [ "$LOCALIZED" != "1" ]; then
   exit 4
 fi
 echo "LOCALIZED"
+fi
 
 start_object_tracking() {
   source "$LOCALIZATION_WS/devel/setup.bash"

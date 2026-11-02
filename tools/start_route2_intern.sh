@@ -13,6 +13,11 @@
 #   LATENCY_S=0 ./start_route2_intern.sh D5 A
 #   ./start_route2_intern.sh D4_to_D5_smooth  # the smoothed 10-28 line
 #   ./start_route2_intern.sh D5_to_A_raw      # the unsmoothed 10-28 line
+#   KEEP_LOCALIZATION=0 ./start_route2_intern.sh D4 D5   # new global fix
+#
+# The first bring-up localizes from scratch. Every later one, with the stack
+# still up, keeps the lidar, FAST-LIO and the localizer and swaps only the
+# route layer, so a fix made at A carries through D4 and D5.
 #
 # The menu offers the destination of the last route brought up here as the
 # origin (~/.route2_last_destination). That is where the chair should be if
@@ -105,11 +110,28 @@ export PROFILE="${PROFILE:-dwa}"
 DEST="$(echo "$KEY" | cut -d_ -f3)"
 case "$DEST" in A|D4|D5) echo "$DEST" > "$LAST_FILE" 2>/dev/null || true ;; esac
 
+# Only the first bring-up searches for a fix. Once a localizer is running,
+# the next leg keeps it and restarts just the route layer; the bring-up
+# refuses that unless it is TRACKING on this map with the chair parked.
+# KEEP_LOCALIZATION=0 forces the full restart and a new global fix.
+if [ -z "${KEEP_LOCALIZATION+x}" ]; then
+  if pgrep -f '[m]oving_icp_localizer' >/dev/null 2>&1; then
+    export KEEP_LOCALIZATION=1
+  else
+    export KEEP_LOCALIZATION=0
+  fi
+fi
+
 echo "=============================================================="
 echo " route2_intern  $KEY"
 echo "   map        $MAP_ID"
 echo "   route      $ROUTE"
 echo "   profile    $PROFILE   latency_s ${LATENCY_S:-<script default 0.55>}"
+if [ "$KEEP_LOCALIZATION" = "1" ]; then
+  echo "   localize   kept from the running stack (KEEP_LOCALIZATION=0 for a new fix)"
+else
+  echo "   localize   full start, global fix (MIN_REFINED_SCORE $MIN_REFINED_SCORE)"
+fi
 echo "   failsafe   the joystick - operator aboard, hand on it"
 echo "=============================================================="
 echo ""
