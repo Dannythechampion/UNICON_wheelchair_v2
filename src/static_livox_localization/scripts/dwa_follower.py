@@ -136,8 +136,11 @@ LATENCY_S = 0.55
 # The lead projects a turn the planner has already reversed for another
 # 0.6 s; that is the over-steer behind the 11-02 S-weave near A and the
 # 56-degree overshoot at wp 935. "off" plans from the measured pose.
+# smith is the default from 2026-11-04, on the 11-02 bag replay (heading
+# error through turn reversals p50 1.2 deg against 3.1-4.7 for the lead),
+# before it has been driven; ~latency_mode lead puts the old lead back.
 LATENCY_MODES = ("lead", "smith", "off")
-LATENCY_MODE = "lead"
+LATENCY_MODE = "smith"
 
 # How wide a slice of each object the planner is shown, either side of the
 # centreline. Wider than the follower's CORRIDOR_HALF_WIDTH 0.45, which is

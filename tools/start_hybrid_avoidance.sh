@@ -104,7 +104,7 @@ ROUTE="${ROUTE:-$HOME/wheelchair_localization_src/routes/20260816_route_v9_clear
 BAND="${BAND:-$HOME/wheelchair_localization_src/routes/20260816_route_v9_clearance_safety_band.json}"
 DRIVABLE_MASK="${DRIVABLE_MASK:-$HOME/wheelchair_localization_src/routes/route_2d_map_v9.yaml}"
 LATENCY_S="${LATENCY_S:-0.55}"
-LATENCY_MODE="${LATENCY_MODE:-lead}"
+LATENCY_MODE="${LATENCY_MODE:-smith}"
 case "$LATENCY_MODE" in
   lead|smith|off) ;;
   *) fail "LATENCY_MODE must be lead, smith or off, got '$LATENCY_MODE'" ;;

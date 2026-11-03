@@ -206,10 +206,10 @@ if [ -n "$LATENCY_BAD" ]; then
   echo "ERROR: LATENCY_S must be a non-negative number, got '$LATENCY_S'" >&2
   exit 65
 fi
-# lead = LATENCY_S on the measured arc (the default); smith = the commands
-# already sent through the base model measured on 2026-11-02
-# (actuation_lag.py), where LATENCY_S is not used; off = no compensation.
-LATENCY_MODE="${LATENCY_MODE:-lead}"
+# smith = the commands already sent through the base model measured on
+# 2026-11-02 (actuation_lag.py; the default), where LATENCY_S is not used;
+# lead = LATENCY_S on the measured arc; off = no compensation.
+LATENCY_MODE="${LATENCY_MODE:-smith}"
 case "$LATENCY_MODE" in
   lead|smith|off) ;;
   *) echo "ERROR: LATENCY_MODE must be lead, smith or off, got '$LATENCY_MODE'" >&2

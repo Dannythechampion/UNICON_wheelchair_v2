@@ -52,7 +52,7 @@ DRIVABLE_MASK="$(param /waypoint_follower/drivable_mask)"
 BODY_FRAME_PROFILE="$(param /waypoint_follower/body_frame_profile)"
 SAFETY_POLICIES="$(param /waypoint_follower/safety_policies)"
 LATENCY_S="$(rosparam get /waypoint_follower/latency_s 2>/dev/null || echo 0.55)"
-LATENCY_MODE="${LATENCY_MODE:-$(rosparam get /waypoint_follower/latency_mode 2>/dev/null || echo lead)}"
+LATENCY_MODE="${LATENCY_MODE:-$(rosparam get /waypoint_follower/latency_mode 2>/dev/null || echo smith)}"
 REQUIRE_GPU="${REQUIRE_GPU:-$(rosparam get /waypoint_follower/require_gpu 2>/dev/null || echo true)}"
 PREFER_GPU="${PREFER_DWA_GPU:-$(rosparam get /waypoint_follower/prefer_gpu 2>/dev/null || echo true)}"
 for value in "$ROUTE" "$BAND" "$DRIVABLE_MASK"; do

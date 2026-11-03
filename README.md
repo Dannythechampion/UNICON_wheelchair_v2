@@ -285,8 +285,9 @@ E-stop first: `/wheel_status` `data[1]` should toggle 65 ↔ 77.
 | Mark | `~/mark.py <label>` | Optional: marks an arrival in the black box and `~/field_marks.log` |
 | Stop | `~/stop.sh` | Stops it, as does moving the joystick |
 
-`LATENCY_S` is not set by the wrappers, so the follower uses its 0.55 s default. Running with
-`LATENCY_S=0 ~/start_route2_intern.sh` is still an open comparison from the 10-16 run.
+The actuation lag is covered by the Smith predictor (`LATENCY_MODE=smith`, the default since
+2026-11-04, `scripts/actuation_lag.py`). `LATENCY_MODE=lead ~/start_route2_intern.sh` brings back
+the old 0.55 s `LATENCY_S` lead, and `LATENCY_MODE=off` turns compensation off.
 
 The route starts at D5 (제2공학관), and auto-init searches the whole map (`AUTO_INIT_GLOBAL_ONLY`).
 To run on the previous map (merged 0707/0725 with the v9 route) on the same deploy:
