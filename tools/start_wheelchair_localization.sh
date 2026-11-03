@@ -206,6 +206,15 @@ if [ -n "$LATENCY_BAD" ]; then
   echo "ERROR: LATENCY_S must be a non-negative number, got '$LATENCY_S'" >&2
   exit 65
 fi
+# lead = LATENCY_S on the measured arc (the default); smith = the commands
+# already sent through the base model measured on 2026-11-02
+# (actuation_lag.py), where LATENCY_S is not used; off = no compensation.
+LATENCY_MODE="${LATENCY_MODE:-lead}"
+case "$LATENCY_MODE" in
+  lead|smith|off) ;;
+  *) echo "ERROR: LATENCY_MODE must be lead, smith or off, got '$LATENCY_MODE'" >&2
+     exit 65 ;;
+esac
 # OpenBLAS sizes its thread pool to the core count and then SPIN-WAITS
 # those threads between calls. Every numpy operation in the control-loop
 # nodes is tiny - a 25-step horizon, a few hundred band stations - so the
@@ -667,6 +676,7 @@ setsid nohup env $SINGLE_THREAD_ENV \
   _body_frame_profile:="$BODY_FRAME_PROFILE" \
   _safety_policies:="$SAFETY_POLICIES" \
   _latency_s:="$LATENCY_S" \
+  _latency_mode:="$LATENCY_MODE" \
   > "$LOG/live_follower.log" 2>&1 < /dev/null &
 
 echo "[7/7] black-box recorder"
