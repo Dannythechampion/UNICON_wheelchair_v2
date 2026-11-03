@@ -135,6 +135,7 @@ catkin_install_python(
 )
 install(
   FILES
+    scripts/actuation_lag.py
     scripts/array_backend.py
     scripts/gpu_voxel_scorer.py
     scripts/gpu_dwa_backend.py

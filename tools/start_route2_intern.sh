@@ -11,6 +11,7 @@
 #   ./start_route2_intern.sh D4 D5      # from D4 to D5
 #   ./start_route2_intern.sh D4_to_D5   # the same, as a route key
 #   LATENCY_S=0 ./start_route2_intern.sh D5 A
+#   LATENCY_MODE=smith ./start_route2_intern.sh D5 A   # Smith predictor
 #   ./start_route2_intern.sh D4_to_D5_smooth  # the smoothed 10-28 line
 #   ./start_route2_intern.sh D5_to_A_raw      # the unsmoothed 10-28 line
 #   KEEP_LOCALIZATION=0 ./start_route2_intern.sh D4 D5   # new global fix
@@ -126,7 +127,7 @@ echo "=============================================================="
 echo " route2_intern  $KEY"
 echo "   map        $MAP_ID"
 echo "   route      $ROUTE"
-echo "   profile    $PROFILE   latency_s ${LATENCY_S:-<script default 0.55>}"
+echo "   profile    $PROFILE   latency ${LATENCY_MODE:-lead}, latency_s ${LATENCY_S:-<script default 0.55>}"
 if [ "$KEEP_LOCALIZATION" = "1" ]; then
   echo "   localize   kept from the running stack (KEEP_LOCALIZATION=0 for a new fix)"
 else

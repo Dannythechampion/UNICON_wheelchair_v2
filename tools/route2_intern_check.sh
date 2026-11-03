@@ -160,6 +160,7 @@ running_checks() {
   fi
   latency="$(rosparam get /waypoint_follower/latency_s 2>/dev/null)"
   note "latency_s ${latency:-unset}"
+  note "latency_mode $(rosparam get /waypoint_follower/latency_mode 2>/dev/null || echo unset)"
 
   local state
   state="$(timeout 3 rostopic echo -n1 /fast_lio_icp/localization_diagnostics 2>/dev/null \

@@ -104,6 +104,11 @@ ROUTE="${ROUTE:-$HOME/wheelchair_localization_src/routes/20260816_route_v9_clear
 BAND="${BAND:-$HOME/wheelchair_localization_src/routes/20260816_route_v9_clearance_safety_band.json}"
 DRIVABLE_MASK="${DRIVABLE_MASK:-$HOME/wheelchair_localization_src/routes/route_2d_map_v9.yaml}"
 LATENCY_S="${LATENCY_S:-0.55}"
+LATENCY_MODE="${LATENCY_MODE:-lead}"
+case "$LATENCY_MODE" in
+  lead|smith|off) ;;
+  *) fail "LATENCY_MODE must be lead, smith or off, got '$LATENCY_MODE'" ;;
+esac
 VN_IMU="${VN_IMU:-0}"
 case "$VN_IMU" in 0) BODY_FRAME_PROFILE=builtin ;; 1) BODY_FRAME_PROFILE=vn100 ;;
   *) fail "VN_IMU must be 0 or 1" ;; esac
@@ -309,6 +314,7 @@ if [ "$PREFER_DWA_GPU" = "true" ]; then
     _body_frame_profile:="$BODY_FRAME_PROFILE" \
     _safety_policies:="$SAFETY_POLICIES" \
     _latency_s:="$LATENCY_S" \
+    _latency_mode:="$LATENCY_MODE" \
     _prefer_gpu:=true \
     _require_gpu:="$REQUIRE_GPU" \
     _cmd_topic:=/cmd_vel_planned \
@@ -324,6 +330,7 @@ else
     _body_frame_profile:="$BODY_FRAME_PROFILE" \
     _safety_policies:="$SAFETY_POLICIES" \
     _latency_s:="$LATENCY_S" \
+    _latency_mode:="$LATENCY_MODE" \
     _prefer_gpu:=false _require_gpu:=false \
     _cmd_topic:=/cmd_vel_planned \
     > "$LOG/live_hybrid_dwa.log" 2>&1 < /dev/null &

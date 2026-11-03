@@ -82,6 +82,7 @@ from std_msgs.msg import String
 
 import dwa_core
 import mpc_speed
+from actuation_lag import RESIDUAL_TAU_S, SmithPredictor
 from cluster_guard import (GO_ROUND, PERSON_BYPASS,
                            PERSON_BYPASS_CLEARANCE_M,
                            PERSON_BYPASS_SPEED_MPS, WAIT,
@@ -128,6 +129,15 @@ YAW_SLEW_RPS2 = 1.5
 # to get there, and at 0.8 m/s that is 0.44 m of travel the planner was
 # correcting for a place the chair had already left.
 LATENCY_S = 0.55
+
+# How the lag is covered. "lead" is led_state above: the measured arc,
+# extended by LATENCY_S. "smith" is actuation_lag.SmithPredictor: the
+# commands already sent, run through the base model measured on 2026-11-02.
+# The lead projects a turn the planner has already reversed for another
+# 0.6 s; that is the over-steer behind the 11-02 S-weave near A and the
+# 56-degree overshoot at wp 935. "off" plans from the measured pose.
+LATENCY_MODES = ("lead", "smith", "off")
+LATENCY_MODE = "lead"
 
 # How wide a slice of each object the planner is shown, either side of the
 # centreline. Wider than the follower's CORRIDOR_HALF_WIDTH 0.45, which is
@@ -209,10 +219,27 @@ def approach_cap(base_cap, distance_m, stop_m, floor_mps):
 
 class DwaFollower(WaypointFollower):
     CONTROL_LAW = "dwa"
+    latency_mode = LATENCY_MODE
 
     def __init__(self):
         WaypointFollower.__init__(self)
         self.latency_s = float(rospy.get_param("~latency_s", LATENCY_S))
+        self.latency_mode = str(rospy.get_param("~latency_mode",
+                                                LATENCY_MODE))
+        if self.latency_mode not in LATENCY_MODES:
+            raise ValueError("~latency_mode must be one of %s, got %r"
+                             % (", ".join(LATENCY_MODES), self.latency_mode))
+        # The model-error term is off unless asked for (see actuation_lag).
+        self.smith = SmithPredictor(residual_tau_s=float(rospy.get_param(
+            "~smith_residual_tau_s", RESIDUAL_TAU_S)))
+        rospy.loginfo("DWA latency compensation: %s%s", self.latency_mode,
+                      " %.2f s" % self.latency_s
+                      if self.latency_mode == "lead" else
+                      " horizon %.2f s, model error %s" % (
+                          self.smith.horizon_s,
+                          "low-passed %.2f s" % self.smith.residual_tau_s
+                          if self.smith.residual_tau_s > 0.0 else "off")
+                      if self.latency_mode == "smith" else "")
         self.planner = dwa_core.DwaPlanner(
             self.band, self.waypoints,
             distance_m=float(rospy.get_param("~sim_distance_m",
@@ -280,6 +307,10 @@ class DwaFollower(WaypointFollower):
         self.last_yaw_rate = float(message.angular.z)
         if accepted_speed <= 0.02:
             self.command_accel = 0.0
+        # What reached the base, gate stops included, is the predictor's
+        # input - not what the planner asked for.
+        self.smith.on_command(rospy.Time.now().to_sec(), accepted_speed,
+                              self.last_yaw_rate)
 
     def command_for_target(self, target_v, target_w, elapsed):
         """The raw command the ramp will publish for one planner target.
@@ -355,8 +386,11 @@ class DwaFollower(WaypointFollower):
         return [state[:2] + heading * forward + left * lateral
                 for forward, lateral in points]
 
-    def led_state(self, state):
+    def led_state(self, state, now_s=0.0):
         """The state advanced by the actuation lag, along the arc it is on.
+
+        With ~latency_mode smith it is advanced instead by the commands
+        already sent (actuation_lag), and now_s is the predictor's clock.
 
         Only the pose is led; the speed and yaw rate stay as measured,
         because those are what the ramp integrates from. A lead longer than
@@ -364,6 +398,12 @@ class DwaFollower(WaypointFollower):
         so this is a measured number and not a tuning knob - and at zero it
         is the identity, which is what an unmeasured vehicle should use.
         """
+        if self.latency_mode == "off":
+            return state
+        if self.latency_mode == "smith":
+            return np.array(self.smith.predict(
+                state, self.measured_speed, self.measured_yaw_rate, now_s),
+                dtype=float)
         lead = self.latency_s
         if lead <= 0.0:
             return state
@@ -465,7 +505,7 @@ class DwaFollower(WaypointFollower):
         # upstream of the ICP correction. Unfixed, that lag costs 0.33 m of
         # travel at 0.6 m/s and 0.55 m at 1.0 - the planner correcting for
         # where the chair no longer is, which is what lateral hunting is.
-        state = self.led_state(state)
+        state = self.led_state(state, now.to_sec())
         elapsed = 1.0 / CONTROL_HZ
         if self.last_command_stamp is not None:
             elapsed = (now - self.last_command_stamp).to_sec()

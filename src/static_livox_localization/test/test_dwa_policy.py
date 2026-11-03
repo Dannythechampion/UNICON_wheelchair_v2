@@ -185,6 +185,7 @@ def dwa_with(objects, monkeypatch, threat_distance_stop_radius=1.5):
         [np.arange(0.0, 40.0, 0.2), np.zeros(200)])
     follower.current_speed = 0.0
     follower.latency_s = 0.30
+    follower.smith = module.SmithPredictor()
     follower.odom_v = 0.0
     follower.odom_w = 0.0
     follower.last_yaw_rate = 0.0
@@ -806,6 +807,7 @@ def test_final_stop_resynchronizes_the_dwa_command_ramp():
     follower.current_speed = 0.35
     follower.last_yaw_rate = 0.2
     follower.command_accel = 0.18
+    follower.smith = module.SmithPredictor()
     stopped = types.SimpleNamespace(
         linear=types.SimpleNamespace(x=0.0),
         angular=types.SimpleNamespace(z=0.0),
@@ -824,6 +826,7 @@ def test_small_final_command_lag_preserves_the_dwa_acceleration_ramp():
     follower.current_speed = 0.10
     follower.last_yaw_rate = 0.2
     follower.command_accel = 0.08
+    follower.smith = module.SmithPredictor()
     accepted = types.SimpleNamespace(
         linear=types.SimpleNamespace(x=0.09),
         angular=types.SimpleNamespace(z=0.18),
@@ -1467,3 +1470,29 @@ def test_both_obstacle_vetoes_count(reason):
     assert module.gate_stall(reason, 2.0)
     assert not module.gate_stall(reason, 0.1)
     assert not module.gate_stall(reason, None)
+
+
+def test_latency_mode_picks_how_the_plan_is_led():
+    """lead extends the measured arc; smith asks the predictor; off is none."""
+    module, _Stamp = load_follower("dwa_follower")
+    follower = module.DwaFollower.__new__(module.DwaFollower)
+    follower.latency_s = 0.55
+    follower.measured_speed = 0.8
+    follower.measured_yaw_rate = 0.4
+    follower.smith = module.SmithPredictor()
+    state = np.array([0.0, 0.0, 0.0, 0.8, 0.4])
+
+    follower.latency_mode = "lead"
+    assert follower.led_state(state, 10.0)[2] == pytest.approx(0.4 * 0.55)
+
+    follower.latency_mode = "off"
+    assert list(follower.led_state(state, 10.0)) == list(state)
+
+    # A right turn has been on the wire for 0.3 s; the lead would still
+    # project the measured left turn, the predictor knows it is ending.
+    follower.latency_mode = "smith"
+    for i in range(15):
+        follower.smith.on_command(9.7 + 0.02 * i, 0.8, -0.4)
+    led = follower.led_state(state, 10.0)
+    assert led[2] < 0.5 * 0.4 * 0.55
+    assert list(led[3:]) == [0.8, 0.4]
