@@ -1475,6 +1475,7 @@ def test_both_obstacle_vetoes_count(reason):
 def test_latency_mode_picks_how_the_plan_is_led():
     """lead extends the measured arc; smith asks the predictor; off is none."""
     module, _Stamp = load_follower("dwa_follower")
+    assert module.LATENCY_MODE == "smith"
     follower = module.DwaFollower.__new__(module.DwaFollower)
     follower.latency_s = 0.55
     follower.measured_speed = 0.8

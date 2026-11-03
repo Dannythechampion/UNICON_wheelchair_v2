@@ -172,8 +172,9 @@ install -m 755 $R/tools/nuc_home/*.sh ~/
 팔로워는 **PAUSED** 상태로 뜬다. 앱의 [로컬 켜기]를 눌러도 같은 것이 뜬다.
 
 자동 초기화는 지도 전체를 탐색한다(`AUTO_INIT_GLOBAL_ONLY=true`). `TRACKING`이 될 때까지
-움직이지 말고 기다린다. 앞의 지연 보상은 기본 0.55 s다. 10-16 주행과 비교하려면
-`LATENCY_S=0 ~/start_route2_intern.sh`로 띄우고, 어느 값으로 달렸는지 기록한다.
+움직이지 말고 기다린다. 지연 보상은 기본이 스미스 예측기(`LATENCY_MODE=smith`)다. 예전
+0.55 s 선행 보정과 비교하려면 `LATENCY_MODE=lead ~/start_route2_intern.sh`로 띄우고,
+어느 모드로 달렸는지 기록한다.
 
 ## 4. 주행 전 점검
 
@@ -235,7 +236,7 @@ export한 키는 그 프로세스 안에만 있어서, 새 SSH 창에서는 다�
 ## 7. 기록
 
 블랙박스가 세션 전체를 `~/localization_trials/blackbox_*.bag`에 남긴다. 주행 후
-파일 이름, 사용한 배포본(`readlink -f ~/wheelchair_deploys/current`), `LATENCY_S` 값,
+파일 이름, 사용한 배포본(`readlink -f ~/wheelchair_deploys/current`), `LATENCY_MODE` 값,
 멈춘 위치와 `HOLD` 사유를 함께 적어 둔다. bag 다루는 법은 [`../debug_bags.md`](../debug_bags.md).
 
 ## 첫 주행에서 볼 곳

@@ -11,7 +11,7 @@
 #   ./start_route2_intern.sh D4 D5      # from D4 to D5
 #   ./start_route2_intern.sh D4_to_D5   # the same, as a route key
 #   LATENCY_S=0 ./start_route2_intern.sh D5 A
-#   LATENCY_MODE=smith ./start_route2_intern.sh D5 A   # Smith predictor
+#   LATENCY_MODE=lead ./start_route2_intern.sh D5 A    # old 0.55 s lead
 #   ./start_route2_intern.sh D4_to_D5_smooth  # the smoothed 10-28 line
 #   ./start_route2_intern.sh D5_to_A_raw      # the unsmoothed 10-28 line
 #   KEEP_LOCALIZATION=0 ./start_route2_intern.sh D4 D5   # new global fix
@@ -26,9 +26,10 @@
 # measures it.
 #
 # The route has never been driven autonomously. Guards stay on
-# (SAFETY_POLICIES is not touched), the controller is DWA, and LATENCY_S is
-# left to the caller: 0 against the 0.55 s default is still open from the
-# 10-16 run. See docs/2026-10-28-route2-intern-map-ko.md.
+# (SAFETY_POLICIES is not touched), the controller is DWA, and the lag is
+# covered by the Smith predictor (LATENCY_MODE=smith, the default since
+# 2026-11-04); LATENCY_MODE=lead brings back the 0.55 s LATENCY_S lead.
+# See docs/2026-10-28-route2-intern-map-ko.md.
 set -eo pipefail
 
 STATIONS=(A D4 D5)
@@ -127,7 +128,7 @@ echo "=============================================================="
 echo " route2_intern  $KEY"
 echo "   map        $MAP_ID"
 echo "   route      $ROUTE"
-echo "   profile    $PROFILE   latency ${LATENCY_MODE:-lead}, latency_s ${LATENCY_S:-<script default 0.55>}"
+echo "   profile    $PROFILE   latency ${LATENCY_MODE:-smith}${LATENCY_S:+, latency_s $LATENCY_S}"
 if [ "$KEEP_LOCALIZATION" = "1" ]; then
   echo "   localize   kept from the running stack (KEEP_LOCALIZATION=0 for a new fix)"
 else
