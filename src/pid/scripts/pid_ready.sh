@@ -151,7 +151,7 @@ base_nodes="$(roslaunch --nodes base_model wheel.launch 2>"$RUN_DIR/base_launch_
 for node in /uart /wheel_cmd /odom_pub; do
   printf '%s\n' "$base_nodes" | grep -Fxq "$node" || fail "wheel.launch missing $node; inspect $base_path/launch/wheel.launch"
 done
-extra_nodes="$(printf '%s\n' "$base_nodes" | grep -Ev '^(/uart|/wheel_cmd|/odom_pub)$|^$' || true)"
+extra_nodes="$(printf '%s\n' "$base_nodes" | grep -Ev '^(/uart|/wheel_cmd|/odom_pub|/joint_state_publisher|/robot_state_publisher)$|^$' || true)"
 [ -z "$extra_nodes" ] || fail "wheel.launch starts unexpected nodes: $extra_nodes"
 
 # Avoid serializing full point clouds in the terminal. Topic checks use only
