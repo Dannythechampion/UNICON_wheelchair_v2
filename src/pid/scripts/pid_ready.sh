@@ -36,6 +36,7 @@ PERCEPTION_PROFILE="legacy_geometric"
 LOG_BASE="${PID_READY_LOG_DIR:-$HOME/pid_ready_logs}"
 STATE_DIR="${PID_READY_STATE_DIR:-$HOME/.local/state/pid_ready}"
 MONITOR="$SCRIPT_DIR/pid_ready_monitor.py"
+BAG_HELPER="$SCRIPT_DIR/pid_ready_bag.sh"
 
 RED=$'\033[31m'; GRN=$'\033[32m'; YLW=$'\033[33m'; NC=$'\033[0m'
 if [ ! -t 1 ] || [ "${NO_COLOR:-0}" = 1 ]; then RED=''; GRN=''; YLW=''; NC=''; fi
@@ -52,6 +53,7 @@ set +u
 source "$ROS_SETUP"
 set -u
 require_file "$MONITOR"
+require_file "$BAG_HELPER"
 
 run_monitor() {
   # Only the display process runs in this terminal. ROS children are detached.
@@ -231,6 +233,11 @@ else
   ok 'ROS Master'
 fi
 rosparam set /use_sim_time false
+
+# Record localization, wheel feedback, manual driving and named map marks.
+# The recorder survives Ctrl+C in READY; stop it via pid_ready_bag.sh stop.
+bash "$BAG_HELPER" start "$RUN_DIR" || fail "ROS bag recorder could not start"
+ok "ROS bag recording: $RUN_DIR"
 
 source_ws "$LIVOX_WS"
 start_detached livox roslaunch livox_ros_driver2 msg_MID360.launch

@@ -80,6 +80,36 @@ def event(level, message):
     print("%s %s %s" % (stamp, prefix, message), flush=True)
 
 
+# READY_EVENT_MONITOR_V1: recording process health; read-only.
+def recorder_active():
+    state_dir = os.environ.get('PID_READY_STATE_DIR',
+                               os.path.expanduser('~/.local/state/pid_ready'))
+    try:
+        with open(os.path.join(state_dir, 'latest_run_dir'), encoding='utf-8') as file:
+            run_dir = file.read().strip()
+        with open(os.path.join(run_dir, 'rosbag.pid'), encoding='utf-8') as file:
+            pid = int(file.read().strip())
+        with open('/proc/%d/cmdline' % pid, 'rb') as file:
+            cmd = file.read().replace(b'\0', b' ')
+        return b'rosbag' in cmd and b'record' in cmd
+    except (OSError, ValueError):
+        return False
+
+
+def object_summary(data):
+    """Aggregate detections only; these are NOT collision/stop judgements."""
+    if not isinstance(data, dict) or data.get('status') != 'OK':
+        return None
+    objects = data.get('objects')
+    if not isinstance(objects, list):
+        return None
+    moving = sum(1 for obj in objects if isinstance(obj, dict)
+                 and obj.get('motion') == 'moving')
+    static = sum(1 for obj in objects if isinstance(obj, dict)
+                 and obj.get('motion') == 'static')
+    return len(objects), moving, static
+
+
 class Monitor:
     def __init__(self):
         rospy.init_node("pid_ready_monitor", anonymous=True, disable_signals=True)
@@ -247,6 +277,7 @@ def print_snapshot(snapshot):
     else:
         print(" Last Valid GICP          : unavailable (not measured in this monitor session)")
     print(" Motor Mode               : %s" % conditions["Motor Mode"])
+    print(" ROS Bag Recording        : %s" % ("OK" if recorder_active() else "NOT_RUNNING"))
     per = data.get("perception", {})
     objects = per.get("objects", [])
     if isinstance(objects, list) and conditions["Perception"] == "OK":
@@ -271,6 +302,15 @@ def watch(monitor):
         if value != "OK" and not (key == "GICP State" and value == "TRACKING"):
             event("WARN", "%s: %s" % (key, value))
     prev_uart = dict(prev_data.get("uart", {}))
+    prev_recorder = recorder_active()
+    if not prev_recorder:
+        event("WARN", "ROS bag recorder is not running")
+    initial_objects = object_summary(prev_data.get("perception"))
+    objects_present = (initial_objects[0] > 0) if initial_objects is not None else False
+    if objects_present:
+        event("INFO", "Obstacles already detected: %d (moving %d, static %d)" % initial_objects)
+    pending_object_state = None
+    pending_object_count = 0
     while not rospy.is_shutdown():
         time.sleep(2.0)
         conditions, data, _, alarm, _ = monitor.snapshot()
@@ -299,6 +339,35 @@ def watch(monitor):
                 new = int(uart.get(key, 0))
                 if new > old:
                     event("WARN", "UART %s increased: %d -> %d" % (key, old, new))
+        # Warn on recorder process loss; do not emit normal bag statistics.
+        now_recording = recorder_active()
+        if now_recording != prev_recorder:
+            event("OK" if now_recording else "WARN",
+                  "ROS bag recording resumed" if now_recording else "ROS bag recorder stopped")
+        prev_recorder = now_recording
+
+        # Publish obstacle presence/absence transitions only after two polls
+        # (~4 s) to suppress per-frame detections and noise.
+        summary = object_summary(data.get("perception")) if conditions["Perception"] == "OK" else None
+        if summary is not None:
+            present = summary[0] > 0
+            if present != objects_present:
+                if pending_object_state != present:
+                    pending_object_state = present
+                    pending_object_count = 1
+                else:
+                    pending_object_count += 1
+                if pending_object_count >= 2:
+                    objects_present = present
+                    pending_object_state = None
+                    pending_object_count = 0
+                    if present:
+                        event("INFO", "[OBJECT] Detected: %d (moving %d, static %d)" % summary)
+                    else:
+                        event("INFO", "[OBJECT] Cleared")
+            else:
+                pending_object_state = None
+                pending_object_count = 0
         prev_uart = dict(uart)
         previous = conditions
 
@@ -332,6 +401,8 @@ def main():
                 failed.append(("Initial fix", "NOT_VERIFIED"))
             if rospy.get_param("/fast_lio_icp/auto_initialization_stable", False) is not True:
                 failed.append(("Initial fix", "NOT_STABLE"))
+            if not recorder_active():
+                failed.append(("ROS Bag Recording", "NOT_RUNNING"))
             if failed:
                 for key, value in failed:
                     event("ERROR", "%s: %s" % (key, value))
