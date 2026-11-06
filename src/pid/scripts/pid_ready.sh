@@ -14,7 +14,7 @@ case "$MODE" in start|status|watch) ;; *) echo "Usage: $0 [start|status|watch]" 
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${REPO_ROOT:-$(cd "$SCRIPT_DIR/../../.." && pwd)}"
-LOCALIZATION_WS="${LOCALIZATION_WS:-$HOME/livox_static_localization_ws}"
+LOCALIZATION_WS="${LOCALIZATION_WS:-${REPO_ROOT%/source-linux}/ws}"
 LIVOX_WS="${LIVOX_WS:-$HOME/ws_livox}"
 FASTLIO_WS="${FASTLIO_WS:-$HOME/fast_lio_ws}"
 BASE_WS="${BASE_WS:-$HOME/catkin_ws}"
