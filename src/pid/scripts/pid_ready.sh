@@ -22,9 +22,9 @@ ROS_SETUP="${ROS_SETUP:-/opt/ros/noetic/setup.bash}"
 : "${ROS_MASTER_URI:=http://127.0.0.1:11311}"
 export ROS_MASTER_URI
 
-# The selected route is an INITIAL POSE prior only. FF-PID chooses its drive route.
-# After auto_initial_pose.py learns the A/D4/D5 multi-prior mode, replace this
-# one-prior parameter with the new interface without changing the rest.
+# FF–PID 실제 주행 경로는 나중에 별도로 선택합니다.
+# 준비 단계에서 사용할 초기 정합 기준은 항상 A_to_D5의 시작점(A)입니다.
+ROUTE2_KEY=A_to_D5
 AUTO_INIT_GLOBAL_ONLY=false
 VN_IMU="${VN_IMU:-0}"
 REGISTRATION_BACKEND="${REGISTRATION_BACKEND:-fast_vgicp_cuda}"
@@ -70,16 +70,16 @@ fi
 require_file "$REPO_ROOT/tools/route2_intern_env.sh"
 require_file "$REPO_ROOT/tools/perception_profile.sh"
 
-# Do not clobber an existing fixed map / route binding from a different run.
-# route2_intern_env validates the map's pinned SHA-256 (including LFS pointers).
+# 팀 저장소 지도·경로를 검증하되 초기 정합 경로는 A 시작점으로 고정합니다.
 # shellcheck disable=SC1090
+export REPO="$REPO_ROOT"
 source "$REPO_ROOT/tools/route2_intern_env.sh" || fail "route2 asset selection failed"
 INIT_ROUTE="${INIT_ROUTE:-$AUTO_INIT_ROUTE}"
 # shellcheck disable=SC1090
 source "$REPO_ROOT/tools/perception_profile.sh"
 [ "$START_POINTPILLARS" = false ] || fail "this ready script forbids learned/PointPillars detection"
 [ "$GEOMETRIC_FIXED_MAP_SUBTRACTION" = false ] || fail "collision geometry must keep mapped walls"
-for f in "$MAP" "$TRAJ" "$INIT_ROUTE" "$BAND"; do require_file "$f"; done
+for f in "$MAP" "$TRAJ" "$INIT_ROUTE" "$DRIVABLE_MASK"; do require_file "$f"; done
 if [ -n "${TRAJ_SHA256:-}" ]; then
   actual="$(sha256sum "$TRAJ" | awk '{print $1}')"
   [ "$actual" = "$TRAJ_SHA256" ] || fail "trajectory SHA-256 mismatch: $TRAJ"
@@ -282,7 +282,7 @@ ok "GICP TRACKING (initialization: $source_kind)"
 source_ws "$LOCALIZATION_WS"
 start_detached geometry rosrun static_livox_localization hybrid_geometric_objects.py \
   __name:=hybrid_geometric_objects \
-  _body_frame_profile:=builtin _safety_band:="$BAND" \
+  _body_frame_profile:=builtin _drivable_mask:="$DRIVABLE_MASK" \
   _map_path:="$MAP" _map_sha256:="$MAP_SHA256" \
   _fixed_map_subtraction:=false \
   _roi_x_min_m:="$GEOMETRIC_ROI_X_MIN_M" \

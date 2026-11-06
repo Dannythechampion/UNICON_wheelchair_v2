@@ -1,14 +1,40 @@
 #!/usr/bin/env python3
-"""UNICON FF-PD path tracking math (no rospy). All wheel constraints live here.
+"""UNICON FF–PD 경로 추종 제어 계산 모듈(ROS 비의존).
 
-Route JSON is used AS IS; no resampling, smoothing or route modification.
-The caller must validate its bound safety band / drivable mask before driving.
+경로 JSON은 재샘플링하거나 평활화하지 않고 그대로 사용합니다.
+주행 전 경로와 연결된 공통 Drivable Mask는 ROS Node에서 검증합니다.
 """
 import bisect
 import json
 import math
 
 import numpy as np
+
+
+# ======================= FF–PD 제어 파라미터 =======================
+# 제어기 성능을 튜닝할 때는 이 부분만 수정합니다.
+# Node는 여기서 설정한 값을 사용하고, 주행 명령 계산은 FFPD가 수행합니다.
+# 아래 값은 초기 실험용이며 실차에서 검증·튜닝된 최종값이 아닙니다.
+KP = 1.00                        # P 게인: 예상 CTE에 비례한 조향 보정
+KD = 0.5                        # D 게인: 예상 CTE 변화율에 따른 조향 보정
+KI = 0.00                        # I 게인: 초기 FF–PD 실험에서는 사용하지 않음
+MAX_V_MPS = 0.80                 # 휠체어 최대 전진 속도 [m/s]
+MAX_W_RAD_S = 0.60               # 휠체어 최대 각속도 [rad/s]
+WHEEL_TRACK_M = 0.46             # 유효 바퀴 간격 [m]; NUC 구동부와 동일해야 함
+MIN_WHEEL_MPS = 0.30             # 좌·우 각각의 바퀴 최소 구동 속도 [m/s]
+MAX_WHEEL_MPS = 1.00             # 좌·우 각각의 바퀴 최대 구동 속도 [m/s]
+LATERAL_ACCEL_MPS2 = 0.25        # 커브 감속에 사용할 횡가속도 제한 [m/s²]
+CURVATURE_PREVIEW_M = 2.0       # 감속 판단 시 참조할 전방 경로 길이 [m]
+CTE_DEADZONE_M = 0.20           # 작은 횡방향 오차를 무시하는 구간 [m]
+D_DEADZONE_MPS = 0.02            # D항 입력(CTE 변화율) 데드존 [m/s]
+D_CLAMP_RAD_S = 0.15             # D항 단독 조향 기여량 제한 [rad/s]
+
+# 예측 시간과 구동 지연 가정은 서로 다른 개념입니다.
+PREDICTION_HORIZON_S = 0.50      # 현재부터 예측할 미래 시간 [s]
+PREDICTION_MEASURED_S = 0.10     # 예측 초기 측정 바퀴 속도를 사용하는 시간 [s]
+PREDICTION_STEP_S = 0.02         # 예측기 내부 수치 적분 간격 [s]
+PREDICTION_DELAY_S = 0.50        # 명령 반영 지연 가정 [s]; 실측 검증 필요
+# ================================================================
 
 
 def wrap(a):
@@ -39,8 +65,8 @@ class Route:
         self.s = np.r_[0.0, np.cumsum(self.seg_len)]
         self.length = float(self.s[-1])
         self.tangent = np.arctan2(self.seg[:, 1], self.seg[:, 0])
-        # Existing smoothed route files carry yaw_deg. Use it for curvature,
-        # rather than resampling the path inside a controller.
+        # 경로 JSON에 이미 저장된 yaw_deg를 이용해 곡률을 계산합니다.
+        # 제어기 내부에서 경로를 다시 보간하거나 평활화하지 않습니다.
         if not all("yaw_deg" in p for p in points):
             raise ValueError("route needs precomputed yaw_deg at every waypoint")
         yaw = np.unwrap(np.radians([p["yaw_deg"] for p in points]))
@@ -68,10 +94,10 @@ class Route:
         return float(np.interp(np.clip(s, 0, self.length), self.s, self.curvature))
 
     def top20_abs_curvature(self, station, ahead=1.5):
-        """Average the highest 20% of |curvature| in the forward route segment.
+        """전방 구간 절댓값 곡률 중 상위 20%의 평균을 계산합니다.
 
-        Uses the ORIGINAL route's curvature samples; includes interpolated
-        window boundaries only. No waypoint resampling or path smoothing.
+        원본 경로의 곡률 샘플을 사용하며 양쪽 경계값만 보간합니다.
+        경로의 재샘플링이나 추가 평활화는 하지 않습니다.
         """
         start = float(np.clip(station, 0.0, self.length))
         end = min(start + max(0.0, ahead), self.length)
@@ -83,18 +109,21 @@ class Route:
 
 
 class SimplePredictor:
-    """Look 0.5s ahead: measured wheel twist for first 0.1s and
-    past issued commands for the remaining 0.4s. Not a Smith model.
+    """일정 시간 후의 휠체어 위치·자세를 예측합니다.
 
-    The motion integral uses 0.02s substeps, independent of the 0.1s ROS
-    controller period. assumed_delay=0.5s is an unvalidated alignment
-    hypothesis; the 0.5s prediction horizon is a different concept.
+    초기 구간은 실제 측정된 속도를 사용하고, 나머지는 이전 명령 이력을
+    가정 지연만큼 이동시켜 사용합니다. Smith Predictor는 아닙니다.
+    내부 적분 간격은 ROS 제어 주기와 독립적입니다.
+    지연 시간은 실측값이 아닌 가정이며 예측 시간과 혼동하면 안 됩니다.
     """
 
-    def __init__(self, horizon=0.5, measured_interval=0.1,
-                 integration_dt=0.02, assumed_delay=0.5):
-        if not (0 < integration_dt <= measured_interval < horizon and
-                assumed_delay >= 0):
+    def __init__(self, horizon=PREDICTION_HORIZON_S,
+                 measured_interval=PREDICTION_MEASURED_S,
+                 integration_dt=PREDICTION_STEP_S,
+                 assumed_delay=PREDICTION_DELAY_S):
+        if not all(math.isfinite(float(t)) for t in
+                   (integration_dt, measured_interval, horizon, assumed_delay)) or not (
+                   0 < integration_dt <= measured_interval < horizon and assumed_delay >= 0):
             raise ValueError("invalid predictor timing")
         self.horizon = float(horizon)
         self.measured_interval = float(measured_interval)
@@ -123,7 +152,7 @@ class SimplePredictor:
         vm, wm = measured
         t = 0.0
         while t < self.horizon - 1e-10:
-            # Do not step across the 0.1s measured/command boundary.
+            # 측정값 구간과 과거 명령 구간의 경계를 넘지 않도록 적분 간격을 나눕니다.
             boundary = self.measured_interval if t < self.measured_interval - 1e-10 else self.horizon
             h = min(self.integration_dt, boundary - t)
             mid = t + 0.5 * h
@@ -142,23 +171,40 @@ class SimplePredictor:
 
 
 class FFPD:
-    def __init__(self, route, kp=0.3, kd=0.02, ki=0.0,
-                 max_v=0.5, max_w=0.5, wheel_track=0.54,
-                 min_wheel=0.30, max_wheel=1.0,
-                 lateral_accel=0.25, preview_m=2.0,
-                 cte_deadzone=0.015, d_deadzone=0.0, d_limit=0.15):
+    def __init__(self, route, kp=KP, kd=KD, ki=KI,
+                 max_v=MAX_V_MPS, max_w=MAX_W_RAD_S, wheel_track=WHEEL_TRACK_M,
+                 min_wheel=MIN_WHEEL_MPS, max_wheel=MAX_WHEEL_MPS,
+                 lateral_accel=LATERAL_ACCEL_MPS2, preview_m=CURVATURE_PREVIEW_M,
+                 cte_deadzone=CTE_DEADZONE_M, d_deadzone=D_DEADZONE_MPS,
+                 d_limit=D_CLAMP_RAD_S,
+                 prediction_horizon_s=PREDICTION_HORIZON_S,
+                 prediction_measured_s=PREDICTION_MEASURED_S,
+                 prediction_step_s=PREDICTION_STEP_S,
+                 prediction_delay_s=PREDICTION_DELAY_S):
         self.route = route
         self.kp, self.kd, self.ki = kp, kd, ki
         self.max_v, self.max_w = max_v, max_w
         self.wheel_track, self.min_wheel, self.max_wheel = wheel_track, min_wheel, max_wheel
         self.lateral_accel, self.preview_m = lateral_accel, preview_m
         self.cte_deadzone, self.d_deadzone, self.d_limit = cte_deadzone, d_deadzone, d_limit
-        self.predictor = SimplePredictor()
+        params = (kp, kd, ki, max_v, max_w, wheel_track, min_wheel,
+                  max_wheel, lateral_accel, preview_m, cte_deadzone,
+                  d_deadzone, d_limit)
+        if not all(math.isfinite(float(p)) for p in params):
+            raise ValueError("controller parameters must be finite")
+        if not (0 <= min_wheel < max_wheel and 0 < max_v <= max_wheel
+                and 0 < max_w and wheel_track > 0 and lateral_accel > 0
+                and preview_m > 0 and cte_deadzone >= 0 and d_deadzone >= 0
+                and d_limit >= 0 and kp >= 0 and kd >= 0 and ki >= 0):
+            raise ValueError("invalid controller tuning parameters")
+        self.predictor = SimplePredictor(
+            horizon=prediction_horizon_s,
+            measured_interval=prediction_measured_s,
+            integration_dt=prediction_step_s,
+            assumed_delay=prediction_delay_s)
         self.station = None
         self.prev_error = None
         self.integral = 0.0
-        if not (0 <= min_wheel < max_wheel and 0 < max_v <= max_wheel and 0 < max_w):
-            raise ValueError("invalid wheel/controller speed parameters")
 
     def reset(self):
         self.station = None
@@ -167,10 +213,10 @@ class FFPD:
         self.predictor.reset()
 
     def step(self, pose, measured, now, dt):
-        """Compute candidate Twist and diagnostics, not ROS/safety decisions.
+        """다음 선속도·각속도 명령과 제어 진단값을 계산합니다.
 
-        Invalid or physically infeasible commands are reported as feasible=False.
-        The ROS node decides whether to hold, finish, or publish commands.
+        물리적인 바퀴 속도 제약을 만족하지 못하면 feasible=False로 반환합니다.
+        정지·종료·ROS 발행 여부는 Node에서 판단합니다.
         """
         if not (0 < dt < 0.5 and all(math.isfinite(z) for z in pose + measured)):
             raise ValueError("bad dt/pose/velocity")
@@ -187,7 +233,7 @@ class FFPD:
         self.prev_error = error
         self.integral = float(np.clip(self.integral + error * dt, -0.5, 0.5))
 
-        # Preview speed uses mean of the highest 20% of |curvature|, not max.
+        # 커브 감속은 전방 곡률의 최댓값 대신 상위 20% 평균을 사용합니다.
         k_ff = self.route.kappa(self.station + 0.2)
         k_preview = self.route.top20_abs_curvature(self.station, self.preview_m)
         v = self.max_v

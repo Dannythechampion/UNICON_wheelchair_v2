@@ -52,6 +52,8 @@ from cloud_points import (COLLISION_MAX_HEIGHT_M,
 from cluster_tracking import MOVING, STATIC, UNKNOWN, Tracker
 from fixed_map_filter import FixedMapFilter
 from safety_band import SafetyBand
+from route_mask import RouteMask
+from scipy.ndimage import distance_transform_edt
 import tf.transformations as tft
 
 PROCESS_HZ = 5.0
@@ -383,6 +385,28 @@ def classify(cluster):
     return "obstacle"
 
 
+class DrivableMaskWithGrace:
+    """공통 마스크로 기존 contains_many(points, grace=...) 인터페이스를 지원합니다.
+
+    이 허용 오차는 물체의 outside_band *분류*에만 적용합니다.
+    휠체어가 마스크 밖으로 나가는 주행 허가에는 절대 사용하지 않습니다.
+    """
+
+    def __init__(self, yaml_path):
+        self.mask = RouteMask(yaml_path)
+        # 마스크 밖 픽셀에서 가장 가까운 주행 가능 픽셀까지의 거리 [m].
+        self.outside_distance = distance_transform_edt(~self.mask.free) * self.mask.resolution
+
+    def contains_many(self, points, grace=0.0):
+        inside = self.mask.contains_many(points)
+        if grace <= 0:
+            return inside
+        row, col, valid = self.mask._cells(points)
+        near = valid & ~inside
+        inside[near] = self.outside_distance[row[near], col[near]] <= grace
+        return inside
+
+
 class ObstacleClusters:
     def __init__(self):
         rospy.init_node("obstacle_clusters")
@@ -397,7 +421,14 @@ class ObstacleClusters:
             rospy.get_param("~map_sha256"),
             rospy.get_param("~map_match_tolerance",
                             MAP_MATCH_TOLERANCE_M))
-        self.band = SafetyBand(rospy.get_param("~safety_band"))
+        # _drivable_mask를 지정한 새 실행 방식에서만 공통 마스크를 사용합니다.
+        # 기존 스크립트는 여전히 SafetyBand로 동작하도록 호환성을 유지합니다.
+        mask_yaml = str(rospy.get_param("~drivable_mask", "")).strip()
+        if mask_yaml:
+            self.band = DrivableMaskWithGrace(mask_yaml)
+            rospy.loginfo("물체인식: 공통 Drivable Mask 기준, outside_band 스키마 유지")
+        else:
+            self.band = SafetyBand(rospy.get_param("~safety_band"))
         self.band_grace_m = float(rospy.get_param(
             "~object_band_grace", OBJECT_BAND_GRACE_M))
         if not math.isfinite(self.band_grace_m) or self.band_grace_m < 0.0:
