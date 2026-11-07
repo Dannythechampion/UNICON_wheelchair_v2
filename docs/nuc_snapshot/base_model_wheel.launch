@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+
+<launch>
+
+  <!-- Per-stack wheel_cmd settings. Each stack passes its own, e.g. the DWA
+       stack: wheel_separation_m:=0.54 turn_boost:=false cmd_callers:=/tip_guard.
+       The defaults are the PID stack's (2026-11-06), so a plain
+       `roslaunch base_model wheel.launch` behaves exactly as before. -->
+  <arg name="wheel_separation_m" default="0.46"/>
+  <arg name="turn_boost" default="false"/>
+  <arg name="cmd_callers" default="/tip_guard,/ff_pid"/>
+
+  <!-- Robot Description -->
+  <param name="robot_description" textfile="$(find base_model)/urdf/wheel.xacro"/>
+  <node name="joint_state_publisher" pkg="joint_state_publisher" type="joint_state_publisher"/>
+  <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher"/>
+
+  <!-- UART -->
+  <node pkg="base_model" type="uart.py" name="uart" output="screen"/>
+
+  <!-- Odometry -->
+  <node pkg="base_model" type="odom_pub.py" name="odom_pub" output="screen"/>
+
+  <!-- Wheel Command -->
+  <node pkg="base_model" type="wheel_cmd_tmp.py" name="wheel_cmd" output="screen">
+    <param name="wheel_separation_m" type="double" value="$(arg wheel_separation_m)"/>
+    <param name="turn_boost" type="bool" value="$(arg turn_boost)"/>
+    <param name="cmd_callers" type="str" value="$(arg cmd_callers)"/>
+  </node>
+
+</launch>

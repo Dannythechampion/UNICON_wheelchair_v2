@@ -215,6 +215,20 @@ case "$LATENCY_MODE" in
   *) echo "ERROR: LATENCY_MODE must be lead, smith or off, got '$LATENCY_MODE'" >&2
      exit 65 ;;
 esac
+# The DWA stack's own base settings, passed to base_model wheel.launch so
+# the PID stack's (0.46 m, its own /ff_pid caller) can never leak in, nor
+# ours into it: roslaunch rewrites the node's private params every launch.
+# 0.54 m is the track width every DWA-side node uses (waypoint_follower,
+# terrain_guard, semantic_safety_supervisor); turn boost is off; only the
+# safety chain's last stage may drive.
+BASE_WHEEL_SEPARATION_M="${BASE_WHEEL_SEPARATION_M:-0.54}"
+BASE_TURN_BOOST="${BASE_TURN_BOOST:-false}"
+BASE_CMD_CALLERS="${BASE_CMD_CALLERS:-/tip_guard}"
+case "$BASE_TURN_BOOST" in
+  true|false) ;;
+  *) echo "ERROR: BASE_TURN_BOOST must be true or false, got '$BASE_TURN_BOOST'" >&2
+     exit 65 ;;
+esac
 # OpenBLAS sizes its thread pool to the core count and then SPIN-WAITS
 # those threads between calls. Every numpy operation in the control-loop
 # nodes is tiny - a 25-step horizon, a few hundred band stations - so the
@@ -632,8 +646,18 @@ if [ "$SHADOW_QA" = "1" ]; then
 fi
 
 echo "[6/7] wheel base + safety gate + follower (paused)"
+# The PID stack drives the same base. Two controllers on one /cmd_vel is
+# never wanted, so refuse rather than start beside it.
+if timeout 3 rosnode list 2>/dev/null | grep -Fxq /ff_pid; then
+  echo "ERROR: /ff_pid (PID stack) is running - stop it with" \
+       "pid_ready_shutdown.sh before starting the DWA stack" >&2
+  exit 5
+fi
 source "$HOME/catkin_ws/devel/setup.bash"
 setsid nohup roslaunch base_model wheel.launch \
+  wheel_separation_m:="$BASE_WHEEL_SEPARATION_M" \
+  turn_boost:="$BASE_TURN_BOOST" \
+  cmd_callers:="$BASE_CMD_CALLERS" \
   > "$LOG/live_base.log" 2>&1 < /dev/null &
 for i in $(seq 1 15); do
   timeout 3 rostopic echo -n1 /wheel_status >/dev/null 2>&1 && break
@@ -642,6 +666,21 @@ done
 if ! timeout 3 rostopic echo -n1 /wheel_status >/dev/null 2>&1; then
   echo "ERROR: wheel base not responding (/wheel_status silent)"; exit 5
 fi
+# A base_model older than the per-stack params ignores the args and drives
+# on its own constants; that must stop here, not be found out on the route.
+base_sep="$(timeout 3 rosparam get /wheel_cmd/wheel_separation_m 2>/dev/null || true)"
+base_boost="$(timeout 3 rosparam get /wheel_cmd/turn_boost 2>/dev/null || true)"
+base_callers="$(timeout 3 rosparam get /wheel_cmd/cmd_callers 2>/dev/null || true)"
+if ! python3 -c 'import sys; sys.exit(abs(float(sys.argv[1]) - float(sys.argv[2])) > 1e-6)' \
+      "${base_sep:-nan}" "$BASE_WHEEL_SEPARATION_M" 2>/dev/null || \
+   [ "$base_boost" != "$BASE_TURN_BOOST" ] || \
+   [ "$base_callers" != "$BASE_CMD_CALLERS" ]; then
+  echo "ERROR: wheel_cmd settings are '$base_sep / $base_boost / $base_callers'," \
+       "expected '$BASE_WHEEL_SEPARATION_M / $BASE_TURN_BOOST / $BASE_CMD_CALLERS'" \
+       "- base_model wheel.launch lacks the per-stack args" >&2
+  exit 5
+fi
+echo "  base: wheel_separation_m $base_sep, turn_boost $base_boost, cmd_callers $base_callers"
 source "$LOCALIZATION_WS/devel/setup.bash"
 setsid nohup env $SINGLE_THREAD_ENV \
   rosrun static_livox_localization safety_gate.py \

@@ -34,3 +34,20 @@
 
 `base_model_uart.py` 는 실행본 `uart.py` 의 사본입니다. 버전 관리가 안 되는
 파일이라 여기 남깁니다. 원본을 고쳤으면 이 사본도 같이 갱신하십시오.
+
+## 스택별 베이스 설정 (2026-11-07)
+
+`wheel_cmd_tmp.py` 는 DWA 스택과 PID(ff_pid) 스택이 같이 쓰는 노드라서,
+바퀴 간격·회전 부스트·허용 발행자를 파일에 고정하지 않고 `wheel.launch`
+인자로 받습니다. roslaunch 가 실행할 때마다 노드의 private param 을 새로
+쓰므로 한 스택의 설정이 다른 스택 실행으로 넘어가지 않습니다.
+
+| | wheel_separation_m | turn_boost | cmd_callers |
+|---|---|---|---|
+| 기본값 (`roslaunch base_model wheel.launch`, pid_ready.sh) | 0.46 | false | /tip_guard,/ff_pid |
+| DWA (`start_wheelchair_localization.sh`) | 0.54 | false | /tip_guard |
+
+DWA 쪽 값은 `BASE_WHEEL_SEPARATION_M`, `BASE_TURN_BOOST`, `BASE_CMD_CALLERS`
+환경변수로 바꿀 수 있고, 시작 스크립트는 실제로 적용된 `/wheel_cmd/*` 값을
+확인해서 다르면 멈춥니다. `/ff_pid` 가 떠 있으면 DWA 스택은 시작하지 않습니다.
+설치 전 원본은 NUC `~/deploy_backups/base_model_pre_perstack_20261107/`.

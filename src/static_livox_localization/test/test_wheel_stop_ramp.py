@@ -219,3 +219,97 @@ def test_the_snapshot_still_matches_what_is_running():
     assert SNAPSHOT.read_text() == RUNNING.read_text(), (
         "docs/nuc_snapshot/base_model_wheel_cmd_tmp.py has drifted from "
         "%s - re-snapshot it" % RUNNING)
+
+
+RUNNING_LAUNCH = Path("/home/mprp3/catkin_ws/src/base_model/launch/wheel.launch")
+
+
+@pytest.mark.skipif(not RUNNING_LAUNCH.exists(), reason="not on the NUC")
+def test_the_launch_snapshot_still_matches_what_is_running():
+    launch = SNAPSHOT.parent / "base_model_wheel.launch"
+    assert launch.read_text() == RUNNING_LAUNCH.read_text(), (
+        "docs/nuc_snapshot/base_model_wheel.launch has drifted from %s"
+        % RUNNING_LAUNCH)
+
+
+# ------------------------------------------------ per-stack base settings
+
+def wheel_kmh(command):
+    left = decode(command[0], command[1]) * 3.6
+    right = decode(command[2], command[3]) * 3.6
+    return left, right
+
+
+def params(values):
+    return lambda name, default=None: values.get(name, default)
+
+
+def test_defaults_are_the_pid_stack_settings_unchanged():
+    """A plain `roslaunch base_model wheel.launch` (pid_ready.sh) must get
+    exactly what the 2026-11-06 file hard-coded."""
+    assert wheel.load_settings(params({})) == (
+        0.46, False, ("/ff_pid", "/tip_guard"))
+    assert wheel.compute_wheel_command(0.5, 0.3) == \
+        wheel.compute_wheel_command(0.5, 0.3, 0.46, False)
+
+
+def test_dwa_settings_split_yaw_over_0_54_m_without_boost():
+    sep, boost, callers = wheel.load_settings(params({
+        "~wheel_separation_m": 0.54, "~turn_boost": False,
+        "~cmd_callers": "/tip_guard"}))
+    assert (sep, boost, callers) == (0.54, False, ("/tip_guard",))
+    left, right = wheel_kmh(wheel.compute_wheel_command(0.5, 0.3, sep, boost))
+    # 0.3 rad/s x 0.54 m = 0.162 m/s = 0.58 km/h; one count is 0.1 km/h.
+    assert right - left == pytest.approx(0.6, abs=0.05)
+    assert (left + right) / 2.0 == pytest.approx(1.8, abs=0.05)
+
+
+def test_the_two_separations_give_different_wheel_splits():
+    dwa = wheel_kmh(wheel.compute_wheel_command(0.5, 0.4, 0.54, False))
+    pid = wheel_kmh(wheel.compute_wheel_command(0.5, 0.4, 0.46, False))
+    assert dwa[1] - dwa[0] > pid[1] - pid[0]
+
+
+def test_boost_off_leaves_a_slow_turn_alone_and_on_restores_the_old_fix():
+    off = wheel_kmh(wheel.compute_wheel_command(0.0, 0.5, 0.54, False))
+    on = wheel_kmh(wheel.compute_wheel_command(0.0, 0.5, 0.54, True))
+    assert max(abs(off[0]), abs(off[1])) < wheel.TURN_AUTHORITY_KMH
+    assert max(abs(on[0]), abs(on[1])) >= wheel.TURN_AUTHORITY_KMH - 0.05
+    # Same yaw asked for either way: only the common speed differs.
+    assert on[1] - on[0] == pytest.approx(off[1] - off[0], abs=0.11)
+
+
+def test_launch_strings_are_parsed_and_nonsense_refused():
+    sep, boost, callers = wheel.load_settings(params({
+        "~wheel_separation_m": "0.54", "~turn_boost": "true",
+        "~cmd_callers": " /tip_guard , /ff_pid "}))
+    assert (sep, boost, callers) == (0.54, True, ("/ff_pid", "/tip_guard"))
+    for bad in ({"~wheel_separation_m": 0.05},
+                {"~wheel_separation_m": float("nan")},
+                {"~turn_boost": "maybe"},
+                {"~cmd_callers": ""},
+                {"~cmd_callers": "tip_guard"}):
+        with pytest.raises(ValueError):
+            wheel.load_settings(params(bad))
+
+
+def test_a_caller_outside_the_stack_list_latches_a_stop():
+    guard = wheel.WheelCommandGuard.__new__(wheel.WheelCommandGuard)
+    guard.wheel_separation_m, guard.turn_boost = 0.54, False
+    guard.cmd_callers = ("/tip_guard",)
+    guard.mode = wheel.AUTO_MODE
+    guard.fault_latched = False
+    sent = []
+    guard.publish = sent.append
+    guard.publish_stop = lambda: sent.append("STOP")
+
+    def twist(caller):
+        return types.SimpleNamespace(
+            linear=types.SimpleNamespace(x=0.5),
+            angular=types.SimpleNamespace(z=0.0),
+            _connection_header={"callerid": caller})
+
+    guard.on_velocity(twist("/tip_guard"))
+    assert sent[-1] != "STOP"
+    guard.on_velocity(twist("/ff_pid"))
+    assert sent[-1] == "STOP" and guard.fault_latched
