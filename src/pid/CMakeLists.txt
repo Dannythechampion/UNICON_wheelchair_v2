@@ -5,6 +5,7 @@ find_package(catkin REQUIRED COMPONENTS
   rospy
   std_msgs
   geometry_msgs
+  nav_msgs
   diagnostic_msgs
   std_srvs
   tf
@@ -17,6 +18,7 @@ catkin_package(
     rospy
     std_msgs
     geometry_msgs
+    nav_msgs
     diagnostic_msgs
     std_srvs
     tf
@@ -27,6 +29,7 @@ catkin_package(
 catkin_install_python(
   PROGRAMS
     scripts/ff_pid_node.py
+    scripts/pid_safety.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

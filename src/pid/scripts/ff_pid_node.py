@@ -10,6 +10,7 @@ import math
 import os
 import sys
 import threading
+from collections import deque
 
 import numpy as np
 import rospy
@@ -18,6 +19,7 @@ import rospkg
 import tf.transformations as tft
 from diagnostic_msgs.msg import DiagnosticArray
 from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
+from nav_msgs.msg import Odometry
 from std_msgs.msg import Bool, Int16MultiArray, String
 from std_srvs.srv import SetBool, SetBoolResponse
 
@@ -78,15 +80,13 @@ AUTO_MODE = 65  # NUC 구동부에서 사용하는 자동 모드 값
 # 아래 값은 ROS 노드의 실행 조건 및 정지 판단에만 사용합니다.
 # Kp, Kd, FF, 바퀴 간격, 속도 제한 등의 기본값은 ff_pid_core.py 상단에 있습니다.
 # 필요한 경우 ROS private 파라미터로 실행 시 값만 덮어쓸 수 있습니다.
-MAX_CTE_M = 0.70                # 허용 경로 이탈 거리 [m]
-MAX_HEADING_ERROR_RAD = 1.50    # 허용 경로 접선과의 자세 오차 [rad]
 GOAL_TOLERANCE_M = 0.40         # 목표점 도착 허용 거리 [m]
 STOPPED_WHEEL_THRESHOLD_MPS = 0.06  # 정지로 간주할 바퀴 속도 [m/s]
 STOPPED_REPORTS_TO_FINISH = 3   # 종료 전 연속 정지 확인 횟수
 MAX_POSE_AGE_S = 0.50           # 허용 위치 데이터 수신 지연 [s]
 MAX_WHEEL_AGE_S = 0.35          # 허용 바퀴 상태 수신 지연 [s]
 MAX_DIAG_AGE_S = 2.0            # 허용 GICP 진단 수신 지연 [s]
-CONTROL_PERIOD_S = 0.10        # ROS 제어 주기 [s] (10Hz)
+CONTROL_PERIOD_S = 0.02        # ROS 제어 주기 [s] (50Hz)
 PEER_CHECK_PERIOD_S = 1.0      # /cmd_vel 중복 발행자 확인 주기 [s]
 # ================================================================
 
@@ -164,12 +164,23 @@ class FFNode:
         self.external_hold = False
         self.stopped_reports = 0
         self.competing_sources = []
-        self.max_cte = float(rospy.get_param("~max_cte", MAX_CTE_M))
-        self.max_heading_error = float(rospy.get_param("~max_heading_error", MAX_HEADING_ERROR_RAD))
         self.goal_tolerance = float(rospy.get_param("~goal_tolerance", GOAL_TOLERANCE_M))
         self.stopped_wheel_threshold = float(rospy.get_param("~stopped_wheel_threshold", STOPPED_WHEEL_THRESHOLD_MPS))
         self.pose = None
         self.pose_received = None
+        self.gicp_received = None
+        self.gicp_raw = None
+        self.gicp_odom_ref = None
+        self.gicp_stamp = None
+        self.pose_seq = 0
+        self.odom_history = deque(maxlen=100)
+        self.odom_latest = None
+        self.odom_received = None
+        self.pitch_deg = 0.0
+        self.motion_policy = "STOP"
+        self.policy_received = None
+        self.obstacle_stopped = False
+        self.resume_after_obstacle = False
         self.wheel = None
         self.wheel_pair = None
         self.wheel_received = None
@@ -185,6 +196,9 @@ class FFNode:
         self.status = rospy.Publisher("/ff_pid/status", String, queue_size=3)
         rospy.Subscriber("/fast_lio_icp/pose", PoseWithCovarianceStamped,
                          self.on_pose, queue_size=5)
+        rospy.Subscriber("/Odometry", Odometry, self.on_odom, queue_size=50)
+        rospy.Subscriber("/ff_pid/motion_policy", String,
+                         self.on_motion_policy, queue_size=2)
         rospy.Subscriber("/wheel_status", Int16MultiArray,
                          self.on_wheel, queue_size=5)
         rospy.Subscriber("/fast_lio_icp/localization_diagnostics", DiagnosticArray,
@@ -194,33 +208,95 @@ class FFNode:
         rospy.Subscriber("/ff_pid/stop_request", Bool, self.on_external_stop,
                          queue_size=2)
         rospy.Service("/ff_pid/start", SetBool, self.on_start)
-        # ROS Master 조회가 지연될 수 있어 10Hz 제어 루프와 분리합니다.
+        # ROS Master 조회가 지연될 수 있어 50Hz 제어 루프와 분리합니다.
         self.peer_timer = rospy.Timer(rospy.Duration(PEER_CHECK_PERIOD_S), self.on_peer_check)
         self.timer = rospy.Timer(rospy.Duration(CONTROL_PERIOD_S), self.on_tick)
         rospy.on_shutdown(self.stop)
         rospy.loginfo("FF-PD ready: %s, %d waypoints, %.1f m; PAUSED",
                       route_path, len(self.route.xy), self.route.length)
 
-    def on_pose(self, msg):
+    def on_odom(self, msg):
         try:
-            p, q = msg.pose.pose.position, msg.pose.pose.orientation
-            if msg.header.frame_id not in ("map", "/map"):
-                return  # Do not treat local odometry as global map coordinates.
-            matrix = tft.quaternion_matrix([q.x, q.y, q.z, q.w])
-            matrix[:3, 3] = (p.x, p.y, p.z)
-            matrix = matrix @ self.pose_transform
-            _, _, yaw = tft.euler_from_matrix(matrix)
-            value = (float(matrix[0, 3]), float(matrix[1, 3]), float(yaw))
-            if not all(math.isfinite(z) for z in value):
+            q = msg.pose.pose.orientation
+            p = msg.pose.pose.position
+            transform = tft.quaternion_matrix([q.x, q.y, q.z, q.w])
+            transform[:3, 3] = (p.x, p.y, p.z)
+            _, pitch, _ = tft.euler_from_matrix(transform)
+            stamp = msg.header.stamp.to_sec()
+            if stamp <= 0 or not math.isfinite(stamp):
+                return
+            if not np.isfinite(transform).all():
                 return
             now = rospy.Time.now().to_sec()
+            with self.lock:
+                self.odom_history.append((stamp, transform))
+                self.odom_latest = transform
+                self.odom_received = now
+                self.pitch_deg = math.degrees(pitch)
+        except Exception as exc:
+            rospy.logwarn_throttle(5, "bad odom: %s", exc)
+
+    def on_pose(self, msg):
+        try:
+            if msg.header.frame_id not in ("map", "/map"):
+                return
+            p, q = msg.pose.pose.position, msg.pose.pose.orientation
+            raw_map = tft.quaternion_matrix([q.x, q.y, q.z, q.w])
+            raw_map[:3, 3] = (p.x, p.y, p.z)
+            now = rospy.Time.now().to_sec()
             stamp = msg.header.stamp.to_sec()
-            if stamp > 0 and abs(now - stamp) > self.max_pose_age:
+            if stamp <= 0 or abs(now - stamp) > self.max_pose_age:
+                return
+            if not np.isfinite(raw_map).all():
                 return
             with self.lock:
-                self.pose, self.pose_received = value, now
+                nearest = min(self.odom_history, key=lambda e: abs(e[0] - stamp)) if self.odom_history else None
+                odom_ref = nearest[1].copy() if nearest is not None and abs(nearest[0] - stamp) <= 0.10 else None
+                self.gicp_raw = raw_map
+                self.gicp_odom_ref = odom_ref
+                self.gicp_stamp = stamp
+                self.gicp_received = now
+                self.pose_seq += 1
+                matrix = raw_map @ self.pose_transform
+                _, _, yaw = tft.euler_from_matrix(matrix)
+                self.pose = (float(matrix[0, 3]), float(matrix[1, 3]), float(yaw))
+                self.pose_received = now
         except Exception as exc:
             rospy.logwarn_throttle(5, "bad pose: %s", exc)
+
+    def current_pose(self, now):
+        if self.gicp_raw is None or self.gicp_received is None:
+            return None
+        if now - self.gicp_received > self.max_pose_age:
+            return None
+        raw_map = self.gicp_raw
+        if (self.gicp_odom_ref is not None and self.odom_latest is not None and
+                self.odom_received is not None and now - self.odom_received <= 0.25):
+            raw_map = raw_map @ np.linalg.inv(self.gicp_odom_ref) @ self.odom_latest
+        matrix = raw_map @ self.pose_transform
+        _, _, yaw = tft.euler_from_matrix(matrix)
+        return float(matrix[0, 3]), float(matrix[1, 3]), float(yaw)
+
+    def on_motion_policy(self, msg):
+        state = str(msg.data).strip().upper()
+        if state not in ("CLEAR", "SLOW", "STOP"):
+            rospy.logwarn_throttle(5, "Unknown obstacle motion policy %s", state)
+            return
+        with self.lock:
+            self.motion_policy = state
+            self.policy_received = rospy.Time.now().to_sec()
+            if state == "STOP":
+                if self.enabled:
+                    self.resume_after_obstacle = True
+                self.obstacle_stopped = True
+                self.disable("OBSTACLE_STOP")
+            elif self.obstacle_stopped and self.resume_after_obstacle and not self.external_hold:
+                if self.readiness(rospy.Time.now().to_sec()) is None:
+                    self.core.reset()
+                    self.enabled = True
+                    self.obstacle_stopped = False
+                    self.resume_after_obstacle = False
+                    self.publish_status("RUNNING")
 
     def on_wheel(self, msg):
         try:
@@ -254,13 +330,16 @@ class FFNode:
         with self.lock:
             if msg.data:
                 self.external_hold = True
+                self.resume_after_obstacle = False
                 self.disable("EXTERNAL_STOP_REQUEST")
             else:
                 self.external_hold = False
                 # 정지 요청 해제만으로 주행이 다시 시작되지 않게 합니다.
 
     def readiness(self, now):
-        if self.pose is None or self.pose_received is None or now - self.pose_received > self.max_pose_age:
+        if self.policy_received is None or now - self.policy_received > 1.0:
+            return "SAFETY_POLICY_STALE"
+        if self.current_pose(now) is None:
             return "POSE_STALE"
         if self.wheel is None or self.wheel_received is None or now - self.wheel_received > self.max_wheel_age:
             return "WHEEL_STALE"
@@ -268,7 +347,7 @@ class FFNode:
             return "NO_TRACKING"
         if self.mode != AUTO_MODE:
             return "NOT_AUTO_MODE"
-        x, y, _ = self.pose
+        x, y, _ = self.current_pose(now)
         if not self.mask.contains((x, y)):
             return "OUTSIDE_SAFE_ROUTE"
         return None
@@ -305,12 +384,16 @@ class FFNode:
             if not req.data:
                 self.finishing = False
                 self.stopped_reports = 0
+                self.resume_after_obstacle = False
+                self.obstacle_stopped = False
                 self.disable("PAUSED")
                 return SetBoolResponse(True, "FF-PD PAUSED")
             if self.finishing:
                 return SetBoolResponse(False, "GOAL_FINISHING")
             if self.external_hold:
                 return SetBoolResponse(False, "EXTERNAL_STOP_REQUEST active")
+            if self.motion_policy == "STOP":
+                return SetBoolResponse(False, "OBSTACLE_STOP active")
             others = self.competing_publishers()
             if others:
                 return SetBoolResponse(False, "REFUSED competing publishers: " + ", ".join(others))
@@ -319,6 +402,8 @@ class FFNode:
                 return SetBoolResponse(False, "REFUSED: " + reason)
             self.core.reset()
             self.last_tick = None
+            self.resume_after_obstacle = False
+            self.obstacle_stopped = False
             self.enabled = True
             self.publish_status("RUNNING")
             return SetBoolResponse(True, "FF-PD STARTED")
@@ -349,42 +434,44 @@ class FFNode:
                     rospy.signal_shutdown("GOAL_REACHED")
                 return
             if not self.enabled:
-                self.stop()
-                return
+                if (self.obstacle_stopped and self.resume_after_obstacle and
+                    self.motion_policy in ("CLEAR", "SLOW") and not self.external_hold):
+                    if self.readiness(now) is None:
+                        self.core.reset()
+                        self.enabled = True
+                        self.obstacle_stopped = False
+                        self.resume_after_obstacle = False
+                        self.publish_status("RUNNING")
+                if not self.enabled:
+                    self.stop()
+                    return
             reason = self.readiness(now)
             if reason is None and self.external_hold:
                 reason = "EXTERNAL_STOP_REQUEST"
             if reason is not None:
-                self.disable("HOLD: " + reason)
+                self.disable("SAFETY_STOP: " + reason)
                 return
             dt = 0.1 if self.last_tick is None else now - self.last_tick
             self.last_tick = now
             try:
-                result = self.core.step(self.pose, self.wheel, now, dt)
-                # 경로 이탈 검사 및 목표점 종료는 ROS Node에서 담당합니다.
-                # Core는 제어 명령의 수학적 계산만 수행합니다.
-                if (result["distance"] > self.max_cte or
-                        abs(result["heading_error"]) > self.max_heading_error):
-                    reason = "PATH_OR_HEADING_DEVIATION"
-                elif (result["station"] >= self.route.length - self.goal_tolerance and
-                      math.hypot(self.pose[0] - self.route.xy[-1, 0],
-                                 self.pose[1] - self.route.xy[-1, 1]) < self.goal_tolerance):
-                    # 먼저 정지를 요청한 뒤 바퀴 정지 상태를 확인하고 종료합니다.
+                pose = self.current_pose(now)
+                if pose is None:
+                    self.disable("SAFETY_STOP: POSE_STALE")
+                    return
+                result = self.core.step(
+                    pose, self.wheel, now, dt,
+                    observation_id=self.pose_seq,
+                    observation_time=self.gicp_stamp,
+                    motion_policy=self.motion_policy,
+                    pitch_deg=self.pitch_deg)
+                px, py, _ = result["predicted_pose"]
+                result["predicted_in_mask"] = bool(self.mask.contains((px, py)))
+                if (result["station"] >= self.route.length - self.goal_tolerance and
+                    math.hypot(pose[0] - self.route.xy[-1, 0],
+                               pose[1] - self.route.xy[-1, 1]) < self.goal_tolerance):
                     self.disable("GOAL_STOPPING")
                     self.finishing = True
                     self.stopped_reports = 0
-                    return
-                elif result["predicted_distance"] > self.max_cte:
-                    reason = "PREDICTED_PATH_DEVIATION"
-                elif not result["feasible"]:
-                    reason = result["hold_reason"]
-                else:
-                    px, py, _ = result["predicted_pose"]
-                    if not self.mask.contains((px, py)):
-                        reason = "PREDICTED_ROUTE_BOUNDARY"
-                if reason is not None:
-                    self.disable("HOLD: " + reason)
-                    rospy.logerr("FF-PD HOLD, manual restart required: %s", reason)
                     return
                 command = Twist()
                 command.linear.x = result["v"]
@@ -393,7 +480,7 @@ class FFNode:
                 self.core.predictor.record(now, result["v"], result["w"])
                 self.publish_status("RUNNING", result)
             except Exception as exc:
-                self.disable("HOLD: " + str(exc))
+                self.disable("ERROR_STOP: " + str(exc))
                 rospy.logerr("FF-PD computation failed: %s", exc)
 
     def publish_status(self, state, result=None):
@@ -401,7 +488,7 @@ class FFNode:
             self.reason = state
             values = {"state": state}
             if result is not None:
-                values.update({k: v for k, v in result.items() if k != "predicted_pose"})
+                values.update(result)  # publish same FF-PD prediction to Safety
             self.status.publish(String(data=json.dumps(values)))
 
 

@@ -24,7 +24,13 @@ WHEEL_TRACK_M = 0.46             # 유효 바퀴 간격 [m]; NUC 구동부와 �
 MIN_WHEEL_MPS = 0.30             # 좌·우 각각의 바퀴 최소 구동 속도 [m/s]
 MAX_WHEEL_MPS = 1.00             # 좌·우 각각의 바퀴 최대 구동 속도 [m/s]
 LATERAL_ACCEL_MPS2 = 0.15        # 커브 감속에 사용할 횡가속도 제한 [m/s²]
-CURVATURE_PREVIEW_M = 2.0       # 감속 판단 시 참조할 전방 경로 길이 [m]
+CURVATURE_PREVIEW_M = 2.0
+CRUISE_MIN_MPS = 0.60
+SLOW_FLAT_MPS = 0.40
+SLOW_HILL_MPS = 0.50
+SLOW_STEEP_MPS = 0.60
+PITCH_HILL_DEG = 2.0
+PITCH_STEEP_DEG = 4.0       # 감속 판단 시 참조할 전방 경로 길이 [m]
 CTE_DEADZONE_M = 0.20           # 작은 횡방향 오차를 무시하는 구간 [m]
 D_DEADZONE_MPS = 0.02            # D항 입력(CTE 변화율) 데드존 [m/s]
 D_CLAMP_RAD_S = 0.15             # D항 단독 조향 기여량 제한 [rad/s]
@@ -205,73 +211,105 @@ class FFPD:
         self.station = None
         self.prev_error = None
         self.integral = 0.0
+        self.last_observation_id = None
+        self.last_observation_time = None
+        self.last_derivative_error = None
+        self.derivative = 0.0
 
     def reset(self):
         self.station = None
         self.prev_error = None
         self.integral = 0.0
         self.predictor.reset()
+        self.last_observation_id = None
+        self.last_observation_time = None
+        self.last_derivative_error = None
+        self.derivative = 0.0
 
-    def step(self, pose, measured, now, dt):
+    def step(self, pose, measured, now, dt, observation_id=None,
+             observation_time=None, motion_policy="CLEAR", pitch_deg=0.0):
         """다음 선속도·각속도 명령과 제어 진단값을 계산합니다.
 
         물리적인 바퀴 속도 제약을 만족하지 못하면 feasible=False로 반환합니다.
         정지·종료·ROS 발행 여부는 Node에서 판단합니다.
         """
-        if not (0 < dt < 0.5 and all(math.isfinite(z) for z in pose + measured)):
-            raise ValueError("bad dt/pose/velocity")
+        if not (0 < dt < 0.5 and all(math.isfinite(z) for z in pose + measured)
+                and math.isfinite(float(pitch_deg))):
+            raise ValueError("bad dt/pose/velocity/pitch")
+        if motion_policy not in ("CLEAR", "SLOW", "STOP"):
+            raise ValueError("invalid obstacle policy")
         x, y, yaw = pose
-        self.station, cte, distance, tangent = self.route.project(
-            x, y, self.station)
+        self.station, cte, distance, tangent = self.route.project(x, y, self.station)
         heading_error = wrap(yaw - tangent)
-
         predicted = self.predictor.predict(pose, measured, now)
         _, raw_error, predicted_distance, _ = self.route.project(
             predicted[0], predicted[1], self.station)
         error = deadzone(raw_error, self.cte_deadzone)
-        de = 0.0 if self.prev_error is None else (error - self.prev_error) / dt
+        # D is updated on a new global pose observation, using its real interval.
+        if observation_id is not None and observation_id != self.last_observation_id:
+            stamp = float(observation_time) if observation_time is not None else float(now)
+            if self.last_observation_time is not None and stamp > self.last_observation_time:
+                sample_dt = stamp - self.last_observation_time
+                raw_de = (error - self.last_derivative_error) / sample_dt
+                self.derivative = deadzone(raw_de, self.d_deadzone)
+            else:
+                self.derivative = 0.0
+            self.last_derivative_error = error
+            self.last_observation_time = stamp
+            self.last_observation_id = observation_id
+        elif observation_id is None:
+            self.derivative = deadzone(
+                (error - self.prev_error) / dt, self.d_deadzone) if self.prev_error is not None else 0.0
         self.prev_error = error
         self.integral = float(np.clip(self.integral + error * dt, -0.5, 0.5))
 
-        # 커브 감속은 전방 곡률의 최댓값 대신 상위 20% 평균을 사용합니다.
         k_ff = self.route.kappa(self.station + 0.2)
         k_preview = self.route.top20_abs_curvature(self.station, self.preview_m)
-        v = self.max_v
+        v_cruise = self.max_v
         if k_preview > 1e-4:
-            v = min(v, math.sqrt(self.lateral_accel / k_preview),
-                    self.max_w / k_preview)
-
-        ff = v * k_ff
-        p = -self.kp * error
-        d = float(np.clip(-self.kd * deadzone(de, self.d_deadzone),
-                          -self.d_limit, self.d_limit))
-        i_term = -self.ki * self.integral
-        wanted_w = float(np.clip(ff + p + i_term + d, -self.max_w, self.max_w))
-        if (abs(measured[0]) < 0.15 and abs(k_ff) < 0.035 and
-                abs(cte) < 0.08 and abs(heading_error) < 0.10):
-            wanted_w = 0.0
-
-        allowable_w = max(0.0, min(self.max_w,
-                     2 * (v - self.min_wheel) / self.wheel_track,
-                     2 * (self.max_wheel - v) / self.wheel_track))
-        reason = None
-        if v < self.min_wheel:
-            reason = "CURVE_SPEED_BELOW_WHEEL_MIN"
-        elif abs(wanted_w) > allowable_w + 0.02:
-            reason = "WHEEL_STEERING_INFEASIBLE"
-
-        if reason is None:
-            w = float(np.clip(wanted_w, -allowable_w, allowable_w))
-            vl, vr = v - self.wheel_track * w / 2, v + self.wheel_track * w / 2
+            v_cruise = min(v_cruise, math.sqrt(self.lateral_accel / k_preview),
+                           self.max_w / k_preview)
+        v_cruise = max(min(self.max_v, CRUISE_MIN_MPS), v_cruise)
+        if pitch_deg >= PITCH_STEEP_DEG:
+            slow_speed = SLOW_STEEP_MPS
+        elif pitch_deg >= PITCH_HILL_DEG:
+            slow_speed = SLOW_HILL_MPS
         else:
-            v, w, vl, vr = 0.0, 0.0, 0.0, 0.0
+            slow_speed = SLOW_FLAT_MPS
+        v = v_cruise if motion_policy == "CLEAR" else slow_speed
+        if motion_policy == "STOP":
+            v = 0.0
+        v = min(v, self.max_v)
 
-        return {"feasible": reason is None, "hold_reason": reason,
+        # PD corrects route curvature, with time-based derivative.
+        k_p = -self.kp * error
+        k_d = float(np.clip(-self.kd * self.derivative,
+                            -self.d_limit, self.d_limit))
+        k_i = -self.ki * self.integral
+        # Always calculate FF-PD; low measured speed limits the final yaw rate below.
+        k_cmd = k_ff + k_p + k_d + k_i
+        steering_state = "TRACKING"
+        requested_w = v * k_cmd
+        # The slower wheel must stay above min_wheel in the command, while
+        # measured vehicle speed limits how much turning is allowed at launch.
+        v_for_steering = min(v, measured[0])
+        if v <= 0.0:
+            allowable_w = 0.0
+        else:
+            allowable_w = max(0.0, min(self.max_w,
+                2 * (v_for_steering - self.min_wheel) / self.wheel_track,
+                2 * (self.max_wheel - v) / self.wheel_track))
+        w = float(np.clip(requested_w, -allowable_w, allowable_w))
+        vl, vr = v - self.wheel_track * w / 2, v + self.wheel_track * w / 2
+        return {"feasible": True, "hold_reason": None,
                 "v": v, "w": w,
                 "station": self.station, "cte": cte, "distance": distance,
                 "heading_error": heading_error,
                 "predicted_cte": raw_error,
                 "predicted_distance": predicted_distance,
                 "preview_curvature_top20": k_preview,
-                "ff": ff, "p": p, "i": i_term, "d": d,
+                "ff": v * k_ff, "p": v * k_p, "i": v * k_i, "d": v * k_d,
+                "k_cmd": k_cmd, "k_ff": k_ff, "k_p": k_p, "k_d": k_d,
+                "steering_state": steering_state, "motion_policy": motion_policy,
+                "pitch_deg": float(pitch_deg), "slow_speed_mps": slow_speed,
                 "vl": vl, "vr": vr, "predicted_pose": predicted}

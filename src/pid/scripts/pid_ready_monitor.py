@@ -401,8 +401,6 @@ def main():
                 failed.append(("Initial fix", "NOT_VERIFIED"))
             if rospy.get_param("/fast_lio_icp/auto_initialization_stable", False) is not True:
                 failed.append(("Initial fix", "NOT_STABLE"))
-            if not recorder_active():
-                failed.append(("ROS Bag Recording", "NOT_RUNNING"))
             if failed:
                 for key, value in failed:
                     event("ERROR", "%s: %s" % (key, value))

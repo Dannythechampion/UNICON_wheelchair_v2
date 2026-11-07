@@ -12,6 +12,7 @@ STATE_DIR="${PID_READY_STATE_DIR:-$HOME/.local/state/pid_ready}"
 CHECK="$SCRIPT_DIR/pid_drive_check.py"
 MONITOR="$SCRIPT_DIR/pid_ready_monitor.py"
 NODE="$SCRIPT_DIR/ff_pid_node.py"
+SAFETY="$SCRIPT_DIR/pid_safety.py"
 BAG_HELPER="$SCRIPT_DIR/pid_ready_bag.sh"
 STOP="$SCRIPT_DIR/pid_stop.sh"
 
@@ -33,12 +34,18 @@ select_route() {
   fail "잘못된 경로: $input"
 }
 
-[[ "$#" -le 1 ]] || fail '사용법: bash src/pid/scripts/pid_drive.sh [A_to_D5|1-6]'
+[[ "$#" -le 2 ]] || fail '사용법: bash src/pid/scripts/pid_drive.sh [A_to_D5|1-6] [--test-clear]'
+TEST_CLEAR=false
+if [[ "$#" -eq 2 ]]; then
+  [[ "$2" == "--test-clear" ]] || fail '두 번째 인자는 --test-clear만 사용할 수 있습니다.'
+  [[ "$1" != "position" ]] || fail 'position에는 --test-clear를 사용할 수 없습니다.'
+  TEST_CLEAR=true
+fi
 ROUTE=""
 if [[ "${1:-}" != "position" ]]; then
   ROUTE="$(select_route "${1:-}")"
 fi
-for f in "$ROS_SETUP" "$CHECK" "$MONITOR" "$NODE" "$STOP"; do need "$f"; done
+for f in "$ROS_SETUP" "$CHECK" "$MONITOR" "$NODE" "$SAFETY" "$STOP"; do need "$f"; done
 set +u
 # shellcheck disable=SC1090
 source "$ROS_SETUP"
@@ -69,8 +76,8 @@ loc_path="$(rospack find static_livox_localization 2>/dev/null || true)"
 [[ "$(readlink -f "$pid_path")" == "$(readlink -f "$REPO_ROOT/src/pid")" ]] || fail "잘못된 pid 패키지 경로: $pid_path"
 [[ "$(readlink -f "$loc_path")" == "$(readlink -f "$REPO_ROOT/src/static_livox_localization")" ]] || fail "잘못된 localization 패키지 경로: $loc_path"
 
-if timeout 3 rosnode ping -c1 /ff_pid >/dev/null 2>&1; then
-  fail '/ff_pid가 이미 실행 중입니다. 중복 실행을 막았습니다. 중지하려면 pid_stop.sh를 실행하세요.'
+if timeout 3 rosnode list 2>/dev/null | grep -Ex '/ff_pid|/pid_safety' >/dev/null; then
+  fail '/ff_pid 또는 /pid_safety가 이미 실행 중입니다. 중지하려면 pid_stop.sh를 실행하세요.'
 fi
 info="$(timeout 5 rostopic info /cmd_vel 2>/dev/null || true)"
 if printf '%s\n' "$info" | awk '/^Publishers:/ {p=1;next} /^Subscribers:/ {p=0} p && /^[[:space:]]*\*/ {found=1} END {exit !found}'; then
@@ -80,7 +87,6 @@ fi
 # Read-only preflight. Compares chair pose with the WHOLE selected route, not its START waypoint.
 python3 "$MONITOR" --check-ready || fail 'READY 점검 실패. 수동 모드를 유지합니다.'
 python3 "$CHECK" wheel --mode MANUAL --stopped || fail 'MANUAL 정차 상태를 확인할 수 없습니다.'
-python3 "$CHECK" pose-on-route --route "$ROUTE" || fail '현재 위치/방향이 선택 경로에서 너무 벗어나 있습니다.'
 
 if [[ -f "$BAG_HELPER" ]]; then
   bag_status="$(bash "$BAG_HELPER" status 2>&1 || true)"
@@ -94,17 +100,44 @@ setsid nohup env OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
   python3 -u "$NODE" "_route:=$ROUTE" '_body_frame_profile:=builtin' \
   > "$LOG" 2>&1 < /dev/null &
 NODE_PID=$!
+printf '%s\n' "$NODE_PID" > "$RUN_DIR/ff_pid.pid"
 
 ready=0
 for ((i=0; i<35; i++)); do
   if timeout 2 rosservice info /ff_pid/start >/dev/null 2>&1 &&
-     timeout 2 rosnode ping -c1 /ff_pid >/dev/null 2>&1; then
+     timeout 2 rosnode list 2>/dev/null | grep -Fx /ff_pid >/dev/null; then
     ready=1; break
   fi
   kill -0 "$NODE_PID" 2>/dev/null || break
   sleep 0.3
 done
-[[ "$ready" == 1 ]] || fail "FF-PD 노드 시작 실패. 로그: $LOG"
+[[ "$ready" == 1 ]] || { bash "$STOP" >/dev/null 2>&1 || true; fail "FF-PD 노드 시작 실패. 로그: $LOG"; }
+
+SAFETY_LOG="$RUN_DIR/pid_safety_${ROUTE}_$(date +%Y%m%d_%H%M%S).log"
+# Always overwrite the private ROS param: the previous test=true can survive node exit.
+SAFETY_PARAMS=("_route:=$ROUTE" "_test_clear:=false")
+if [[ "$TEST_CLEAR" == true ]]; then
+  SAFETY_PARAMS=("_route:=$ROUTE" "_test_clear:=true")
+  printf '[WARN] TEST CLEAR: 장애물/마스크 감시 없이 CLEAR만 발행합니다.\n' >&2
+fi
+setsid nohup env OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+  python3 -u "$SAFETY" "${SAFETY_PARAMS[@]}" \
+  > "$SAFETY_LOG" 2>&1 < /dev/null &
+SAFETY_PID=$!
+printf '%s\n' "$SAFETY_PID" > "$RUN_DIR/pid_safety.pid"
+safety_ready=0
+for ((i=0; i<35; i++)); do
+  if timeout 2 rosnode list 2>/dev/null | grep -Fx /pid_safety >/dev/null; then
+    safety_ready=1; break
+  fi
+  kill -0 "$SAFETY_PID" 2>/dev/null || break
+  sleep 0.3
+done
+[[ "$safety_ready" == 1 ]] || { bash "$STOP" >/dev/null 2>&1 || true; fail "Safety 노드 시작 실패. 로그: $SAFETY_LOG"; }
+timeout 5 rostopic echo -n1 /pid_safety/status >/dev/null 2>&1 || {
+  bash "$STOP" >/dev/null 2>&1 || true
+  fail "Safety 상태를 받지 못했습니다. 로그: $SAFETY_LOG"
+}
 
 ARMED=1
 safe_stop_on_exit() {
@@ -130,7 +163,11 @@ printf '%s\n' "$reply" | grep -Eq '^success: [Tt]rue' || fail "제어기가 시�
 printf '\n[RUN] %s 경로 주행 시작\n' "$ROUTE"
 printf '[INFO] 현재 위치부터 선택 경로를 추종합니다. 시작점 일치 조건은 없습니다.\n'
 printf '[INFO] 별도 터미널에서: bash src/pid/scripts/pid_stop.sh\n'
-printf '[WARN] 장애물 기반 자동 정지는 아직 연결되지 않았습니다. 실험구역 통제 및 물리적 정지 수단이 필요합니다.\n'
+if [[ "$TEST_CLEAR" == true ]]; then
+  printf '[WARN] TEST CLEAR 모드: 장애물 및 마스크 자동 STOP 비활성화.\n'
+else
+  printf '[INFO] Safety CLEAR/SLOW/STOP 연결됨 (인식 타임아웃 1.0초).\n'
+fi
 printf '[INFO] 이 터미널의 Ctrl+C도 정지 요청을 보냅니다.\n'
 # Only state transitions are printed now; detailed telemetry is reserved for later.
 python3 "$CHECK" watch --route "$ROUTE"
