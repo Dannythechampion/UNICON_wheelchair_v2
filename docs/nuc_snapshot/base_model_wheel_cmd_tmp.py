@@ -8,12 +8,27 @@ from std_msgs.msg import Int16MultiArray
 
 
 AUTO_MODE = 65
-EXPECTED_CMD_CALLER = "/tip_guard"
 EXPECTED_STATUS_CALLER = "/uart"
 MAX_LINEAR_MPS = 1.5
 MAX_ANGULAR_RAD_S = 0.6
-WHEEL_SEPARATION_M = 0.54
 STOP_COMMAND = (83, 33, 83, 33, 79)
+
+# Per-stack settings. Two controllers share this one node: the DWA stack
+# (/tip_guard, start_wheelchair_localization.sh) and the feed-forward PID
+# stack (/ff_pid, pid_ready.sh). Each sets its own values as wheel.launch
+# args, which roslaunch writes as this node's private params on EVERY
+# launch, so one stack's choice can never linger into the other's run.
+# The defaults below are what the PID stack has used since 2026-11-06 and
+# what a plain `roslaunch base_model wheel.launch` gets.
+#   ~wheel_separation_m  track width used to split yaw into wheel speeds
+#   ~turn_boost          add equal speed to both wheels so a slow turn
+#                        breaks stiction (the 2026-07-29 fix; off = none)
+#   ~cmd_callers         comma-separated /cmd_vel publishers allowed to
+#                        drive; any other publisher latches a stop
+WHEEL_SEPARATION_M = 0.46
+TURN_BOOST = False
+EXPECTED_CMD_CALLERS = ("/tip_guard", "/ff_pid")
+WHEEL_SEPARATION_RANGE_M = (0.30, 0.80)
 
 # Wheel speeds are sent as tenths of a km/h on top of a 33 offset, so one
 # count is 0.1 km/h (0.028 m/s).
@@ -91,6 +106,46 @@ def stop_ramp_command(left_mps, right_mps):
     return direction, magnitude, direction, magnitude, 79
 
 
+def parse_bool(value):
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in ("1", "true", "yes", "on"):
+        return True
+    if text in ("0", "false", "no", "off", ""):
+        return False
+    raise ValueError("not a boolean: %r" % (value,))
+
+
+def parse_callers(value):
+    if isinstance(value, (list, tuple)):
+        items = value
+    else:
+        items = str(value).split(",")
+    callers = tuple(sorted({str(item).strip() for item in items
+                            if str(item).strip()}))
+    if not callers or not all(c.startswith("/") for c in callers):
+        raise ValueError("cmd_callers must list /node names: %r" % (value,))
+    return callers
+
+
+def load_settings(get_param):
+    """(separation, boost, callers) from private params, refusing nonsense.
+
+    A bad value raises rather than falls back: a base that silently drives
+    on the other stack's geometry is the failure this exists to prevent.
+    """
+    separation = float(get_param("~wheel_separation_m", WHEEL_SEPARATION_M))
+    low, high = WHEEL_SEPARATION_RANGE_M
+    if not math.isfinite(separation) or not low <= separation <= high:
+        raise ValueError("~wheel_separation_m %r outside %.2f-%.2f m"
+                         % (separation, low, high))
+    boost = parse_bool(get_param("~turn_boost", TURN_BOOST))
+    callers = parse_callers(get_param("~cmd_callers",
+                                      ",".join(EXPECTED_CMD_CALLERS)))
+    return separation, boost, callers
+
+
 def message_caller_id(message):
     header = getattr(message, "_connection_header", None)
     if not isinstance(header, dict):
@@ -98,7 +153,9 @@ def message_caller_id(message):
     return str(header.get("callerid", "")).strip()
 
 
-def compute_wheel_command(linear_x, angular_z):
+def compute_wheel_command(linear_x, angular_z,
+                          wheel_separation_m=WHEEL_SEPARATION_M,
+                          turn_boost=TURN_BOOST):
     try:
         linear_x = float(linear_x)
         angular_z = float(angular_z)
@@ -108,14 +165,14 @@ def compute_wheel_command(linear_x, angular_z):
             linear_x < 0.0 or linear_x > MAX_LINEAR_MPS or \
             abs(angular_z) > MAX_ANGULAR_RAD_S:
         return None
-    left = (linear_x - angular_z * WHEEL_SEPARATION_M / 2.0) * 3.6
-    right = (linear_x + angular_z * WHEEL_SEPARATION_M / 2.0) * 3.6
+    left = (linear_x - angular_z * wheel_separation_m / 2.0) * 3.6
+    right = (linear_x + angular_z * wheel_separation_m / 2.0) * 3.6
 
     # Give a requested turn enough wheel speed to actually happen. Adding
     # the SAME amount to both wheels leaves right-left untouched, so the
     # yaw rate is exactly the one asked for; only the forward speed rises,
     # and only as far as TURN_AUTHORITY_MAX_LINEAR_MPS allows.
-    if abs(angular_z) > YAW_DEADBAND_RAD_S:
+    if turn_boost and abs(angular_z) > YAW_DEADBAND_RAD_S:
         fastest = max(abs(left), abs(right))
         headroom = (TURN_AUTHORITY_MAX_LINEAR_MPS - linear_x) * 3.6
         boost = min(max(TURN_AUTHORITY_KMH - fastest, 0.0), max(headroom, 0.0))
@@ -149,6 +206,12 @@ def compute_wheel_command(linear_x, angular_z):
 class WheelCommandGuard:
     def __init__(self):
         rospy.init_node("wheel_cmd")
+        self.wheel_separation_m, self.turn_boost, self.cmd_callers = \
+            load_settings(rospy.get_param)
+        rospy.loginfo(
+            "wheel_cmd: wheel_separation_m %.3f, turn_boost %s, "
+            "cmd_callers %s", self.wheel_separation_m,
+            "on" if self.turn_boost else "off", ",".join(self.cmd_callers))
         self.publisher = rospy.Publisher(
             "wheel_cmd", Int16MultiArray, queue_size=1)
         self.mode = None
@@ -183,10 +246,11 @@ class WheelCommandGuard:
         if self.mode != AUTO_MODE:
             self.publish_stop()
             return
-        if message_caller_id(message) != EXPECTED_CMD_CALLER:
+        if message_caller_id(message) not in self.cmd_callers:
             self.fault_latched = True
         command = compute_wheel_command(
-            message.linear.x, message.angular.z)
+            message.linear.x, message.angular.z,
+            self.wheel_separation_m, self.turn_boost)
         if command is None:
             self.fault_latched = True
         if self.fault_latched:
