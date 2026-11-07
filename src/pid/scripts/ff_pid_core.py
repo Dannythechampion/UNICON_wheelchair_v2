@@ -34,6 +34,9 @@ PITCH_STEEP_DEG = 4.0       # 감속 판단 시 참조할 전방 경로 길이 [
 CTE_DEADZONE_M = 0.20           # 작은 횡방향 오차를 무시하는 구간 [m]
 D_DEADZONE_MPS = 0.02            # D항 입력(CTE 변화율) 데드존 [m/s]
 D_CLAMP_RAD_S = 0.15             # D항 단독 조향 기여량 제한 [rad/s]
+LINEAR_ACCEL_LIMIT_MPS2 = 0.40   # RUNNING 선가속도 제한 [m/s²]; 일반 감속은 제한 없음
+ANGULAR_ACCEL_LIMIT_RAD_S2 = 0.60  # RUNNING 각속도 변화율 제한 [rad/s²]
+COMMAND_LIMIT_MAX_DT_S = 0.05    # 제어 루프 지연 시 한 번의 큰 명령 점프 방지
 
 # 예측 시간과 구동 지연 가정은 서로 다른 개념입니다.
 PREDICTION_HORIZON_S = 0.50      # 현재부터 예측할 미래 시간 [s]
@@ -49,6 +52,42 @@ def wrap(a):
 
 def deadzone(x, width):
     return math.copysign(max(0.0, abs(x) - width), x)
+
+
+def limit_running_command(previous_v, previous_w, target_v, target_w, dt,
+                          wheel_track, min_wheel, max_wheel,
+                          linear_accel=LINEAR_ACCEL_LIMIT_MPS2,
+                          angular_accel=ANGULAR_ACCEL_LIMIT_RAD_S2):
+    """Slew-limit normal RUNNING commands only; fault/STOP bypasses this function.
+
+    Linear acceleration and angular velocity changes are limited. Normal
+    linear deceleration is immediate, as requested. Wheel-speed feasibility
+    always takes priority over angular slew rate, including during deceleration.
+    """
+    values = (previous_v, previous_w, target_v, target_w, dt, wheel_track,
+              min_wheel, max_wheel, linear_accel, angular_accel)
+    if not all(math.isfinite(float(x)) for x in values):
+        raise ValueError("non-finite command limiter input")
+    if not (0 < dt < 0.5 and linear_accel > 0 and angular_accel > 0
+            and wheel_track > 0 and 0 <= min_wheel < max_wheel
+            and 0 <= previous_v <= max_wheel and 0 <= target_v <= max_wheel):
+        raise ValueError("invalid command limiter input")
+    step = min(dt, COMMAND_LIMIT_MAX_DT_S)
+    if target_v >= previous_v:
+        v = min(target_v, previous_v + linear_accel * step)
+    else:
+        v = target_v  # No ordinary deceleration ramp.
+
+    # Restrict steering until forward speed can support it without reversing
+    # an inner wheel or exceeding the outer wheel's allowed speed.
+    allowed_w = max(0.0, min(
+        2.0 * (v - min_wheel) / wheel_track,
+        2.0 * (max_wheel - v) / wheel_track))
+    target_w = max(-allowed_w, min(allowed_w, target_w))
+    max_change = angular_accel * step
+    w = previous_w + max(-max_change, min(max_change, target_w - previous_w))
+    w = max(-allowed_w, min(allowed_w, w))
+    return v, w
 
 
 class Route:

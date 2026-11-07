@@ -33,7 +33,7 @@ SIGNALS = {
     "IMU": ("imu", 2.0),
     "FAST-LIO": ("odom", 2.0),
     "Map Pose": ("pose", 2.0),
-    "GICP Diagnostics": ("diag", 3.5),
+    "GICP Diagnostics": ("diag", 5.0),
     "Perception": ("perception", 2.5),
     "GICP Exclusions": ("exclusion", 2.5),
     "Wheel Status": ("wheel", 2.5),

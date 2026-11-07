@@ -85,7 +85,7 @@ STOPPED_WHEEL_THRESHOLD_MPS = 0.06  # 정지로 간주할 바퀴 속도 [m/s]
 STOPPED_REPORTS_TO_FINISH = 3   # 종료 전 연속 정지 확인 횟수
 MAX_POSE_AGE_S = 0.50           # 허용 위치 데이터 수신 지연 [s]
 MAX_WHEEL_AGE_S = 0.35          # 허용 바퀴 상태 수신 지연 [s]
-MAX_DIAG_AGE_S = 2.0            # 허용 GICP 진단 수신 지연 [s]
+MAX_DIAG_AGE_S = 5.0            # 허용 GICP 진단 수신 지연 [s]
 CONTROL_PERIOD_S = 0.02        # ROS 제어 주기 [s] (50Hz)
 PEER_CHECK_PERIOD_S = 1.0      # /cmd_vel 중복 발행자 확인 주기 [s]
 # ================================================================
@@ -189,6 +189,8 @@ class FFNode:
         self.diag_received = None
         self.reason = "PAUSED"
         self.last_tick = None
+        self.last_command_v = 0.0
+        self.last_command_w = 0.0
         self.max_pose_age = float(rospy.get_param("~max_pose_age", MAX_POSE_AGE_S))
         self.max_wheel_age = float(rospy.get_param("~max_wheel_age", MAX_WHEEL_AGE_S))
         self.max_diag_age = float(rospy.get_param("~max_diag_age", MAX_DIAG_AGE_S))
@@ -376,6 +378,8 @@ class FFNode:
         self.enabled = False
         self.core.reset()
         self.last_tick = None
+        self.last_command_v = 0.0
+        self.last_command_w = 0.0
         self.stop()
         self.publish_status(reason)
 
@@ -402,6 +406,8 @@ class FFNode:
                 return SetBoolResponse(False, "REFUSED: " + reason)
             self.core.reset()
             self.last_tick = None
+            self.last_command_v = 0.0
+            self.last_command_w = 0.0
             self.resume_after_obstacle = False
             self.obstacle_stopped = False
             self.enabled = True
@@ -418,6 +424,8 @@ class FFNode:
                     self.finishing = False
                     self.core.reset()  # clear I state without racing another publisher
                     self.last_tick = None
+                    self.last_command_v = 0.0
+                    self.last_command_w = 0.0
                     self.publish_status("COMPETING_CMD_VEL_PUBLISHER")
                     rospy.logerr("FF-PD command conflict: %s", others)
                 # 다른 발행자가 있으면 0속도 메시지조차 경쟁 발행하지 않습니다.
@@ -473,11 +481,21 @@ class FFNode:
                     self.finishing = True
                     self.stopped_reports = 0
                     return
+                # Only normal RUNNING commands are limited. disable() sends
+                # zero immediately for NO_TRACKING and all other safety faults.
+                command_v, command_w = core_settings.limit_running_command(
+                    self.last_command_v, self.last_command_w,
+                    result["v"], result["w"], dt,
+                    self.core.wheel_track, self.core.min_wheel, self.core.max_wheel)
                 command = Twist()
-                command.linear.x = result["v"]
-                command.angular.z = result["w"]
+                command.linear.x = command_v
+                command.angular.z = command_w
                 self.pub.publish(command)
-                self.core.predictor.record(now, result["v"], result["w"])
+                self.last_command_v = command_v
+                self.last_command_w = command_w
+                self.core.predictor.record(now, command_v, command_w)
+                result["command_v"] = command_v
+                result["command_w"] = command_w
                 self.publish_status("RUNNING", result)
             except Exception as exc:
                 self.disable("ERROR_STOP: " + str(exc))
