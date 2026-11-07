@@ -820,6 +820,84 @@ def test_final_stop_resynchronizes_the_dwa_command_ramp():
     assert follower.command_accel == 0.0
 
 
+def _stopped_follower(module, Stamp, measured_speed, wheel_age_s):
+    follower = module.DwaFollower.__new__(module.DwaFollower)
+    follower.current_speed = 0.8
+    follower.last_yaw_rate = 0.2
+    follower.command_accel = 0.18
+    follower.smith = module.SmithPredictor()
+    follower.measured_speed = measured_speed
+    # rospy.Time.now() is stubbed to 100.0 s.
+    follower.wheel_status_stamp = Stamp(100.0 - wheel_age_s)
+    return follower
+
+
+STOP = types.SimpleNamespace(linear=types.SimpleNamespace(x=0.0),
+                             angular=types.SimpleNamespace(z=0.0))
+
+
+def test_gate_stop_while_rolling_resumes_from_the_wheel_speed():
+    """11-04: a 0.3 s gate stop must not restart the ramp from zero."""
+    module, Stamp = load_follower("dwa_follower")
+    follower = _stopped_follower(module, Stamp, 0.7, 0.01)
+
+    follower.on_accepted_command(STOP)
+
+    assert follower.current_speed == pytest.approx(0.7)
+    # The jerk reset and the yaw rate are untouched by the change.
+    assert follower.command_accel == 0.0
+    assert follower.last_yaw_rate == 0.0
+
+
+def test_gate_stop_with_a_stale_wheel_report_keeps_the_accepted_zero():
+    module, Stamp = load_follower("dwa_follower")
+    follower = _stopped_follower(module, Stamp, 0.7,
+                                 module.WHEEL_SPEED_FRESH_S + 0.3)
+
+    follower.on_accepted_command(STOP)
+
+    assert follower.current_speed == 0.0
+
+
+def test_gate_stop_at_rest_keeps_the_accepted_zero():
+    module, Stamp = load_follower("dwa_follower")
+    follower = _stopped_follower(module, Stamp, 0.03, 0.01)
+
+    follower.on_accepted_command(STOP)
+
+    assert follower.current_speed == 0.0
+
+
+def test_rolling_resume_is_capped_at_the_planner_max_speed():
+    module, Stamp = load_follower("dwa_follower")
+    follower = _stopped_follower(module, Stamp, 1.4, 0.01)
+
+    follower.on_accepted_command(STOP)
+
+    assert follower.current_speed == pytest.approx(module.dwa_core.MAX_SPEED)
+
+
+def test_smith_predictor_still_records_the_zero_that_reached_the_base():
+    module, Stamp = load_follower("dwa_follower")
+    follower = _stopped_follower(module, Stamp, 0.7, 0.01)
+
+    follower.on_accepted_command(STOP)
+
+    assert follower.smith.commands[-1] == (0.0, 0.0)
+
+
+def test_nonzero_accepted_command_ignores_the_wheel_speed():
+    """A gate that slows rather than stops still sets the speed state."""
+    module, Stamp = load_follower("dwa_follower")
+    follower = _stopped_follower(module, Stamp, 0.7, 0.01)
+    slowed = types.SimpleNamespace(linear=types.SimpleNamespace(x=0.4),
+                                   angular=types.SimpleNamespace(z=0.1))
+
+    follower.on_accepted_command(slowed)
+
+    assert follower.current_speed == pytest.approx(0.4)
+
+
 def test_small_final_command_lag_preserves_the_dwa_acceleration_ramp():
     module, _Stamp = load_follower("dwa_follower")
     follower = module.DwaFollower.__new__(module.DwaFollower)

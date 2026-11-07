@@ -101,6 +101,19 @@ from waypoint_follower import (WaypointFollower, CONTROL_HZ, CREEP_SPEED,
 # sooner is never the unsafe direction.
 YAW_SLEW_RPS2 = 1.5
 
+# A gate stop that lasts a few cycles leaves the chair still rolling - the
+# base takes 0.55 s to answer and the chair coasts - but the accepted /cmd_vel
+# reads zero. Ramping from that zero is what turned 0.2-1 s dropouts into a
+# fall from 0.8 to 0.1-0.3 m/s on 2026-11-04, and a slow chair given a normal
+# yaw rate pivots on its inner wheel: the S-weave. So a stop resumes from the
+# wheels' own speed while they are still turning. /wheel_status runs at
+# 100 Hz (116,295 frames over 1,163 s in the 10-30 blackbox bag), so 0.2 s is
+# twenty frames: older than that is a base that has gone quiet, and then the
+# accepted zero stands as before. Under 0.05 m/s is one count of the 0.1 km/h
+# report away from rest, and is rest.
+WHEEL_SPEED_FRESH_S = 0.2
+ROLLING_SPEED_MPS = 0.05
+
 # Actuation lag, measured 2026-08-11 (see led_state). Overridable with
 # ~latency_s for a vehicle this has not been measured on; at 0.0 the lead is
 # the identity and the profile behaves exactly as it did before.
@@ -310,10 +323,32 @@ class DwaFollower(WaypointFollower):
         self.last_yaw_rate = float(message.angular.z)
         if accepted_speed <= 0.02:
             self.command_accel = 0.0
+            # The slope is dropped, the speed is not: resume from what the
+            # wheels are doing, not from the zero the gate passed down.
+            rolling = self.rolling_wheel_speed()
+            if rolling is not None:
+                self.current_speed = rolling
         # What reached the base, gate stops included, is the predictor's
         # input - not what the planner asked for.
         self.smith.on_command(rospy.Time.now().to_sec(), accepted_speed,
                               self.last_yaw_rate)
+
+    def rolling_wheel_speed(self):
+        """The wheels' forward speed if they are still turning, else None.
+
+        None when the base report is stale or the chair is at rest, so the
+        accepted command stands exactly as it did before this existed.
+        """
+        stamp = getattr(self, "wheel_status_stamp", None)
+        if stamp is None:
+            return None
+        age = (rospy.Time.now() - stamp).to_sec()
+        if age < 0.0 or age > WHEEL_SPEED_FRESH_S:
+            return None
+        measured = float(getattr(self, "measured_speed", 0.0))
+        if not math.isfinite(measured) or measured <= ROLLING_SPEED_MPS:
+            return None
+        return min(measured, dwa_core.MAX_SPEED)
 
     def command_for_target(self, target_v, target_w, elapsed):
         """The raw command the ramp will publish for one planner target.
