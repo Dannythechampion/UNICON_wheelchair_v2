@@ -108,6 +108,23 @@ SIM_MIN_PREVIEW_S = 2.0
 # distances.
 OBSTACLE_PREVIEW_M = 3.0
 
+# How a candidate is continued past its scored arc for the obstacle test.
+#
+# "straight" holds the arc's end heading out to OBSTACLE_PREVIEW_M. In a bend
+# that is not what the chair does next - it replans ten times a second and
+# follows the route - so the tail of every arc still turning gently runs off
+# the outside of the curve into whatever stands there. Continuing along the
+# route alone (keeping the arc's end offset) is no answer either: it cannot
+# represent a chair that keeps stepping aside, so with an object ON the route
+# it rejects the real way round as well (120/120 cycles held in simulation).
+#
+# "either" (default since 2026-11-08) scores both continuations and keeps the
+# better: a candidate passes if its straight OR its route-following tail
+# clears the floor. The scored arc and its containment are unchanged.
+# ~obstacle_extension straight puts the old behaviour back.
+OBSTACLE_EXTENSION_MODES = ("either", "straight")
+OBSTACLE_EXTENSION = "either"
+
 SPEED_SAMPLES = 5
 # How far ahead the reachable-speed window is drawn. A textbook DWA takes it
 # over one control period, but this chair accelerates at 0.18 m/s^2, so one
@@ -409,6 +426,109 @@ class DwaPlanner:
         grown = np.stack([xs, ys, np.repeat(yaw, count, axis=1)], axis=2)
         return np.concatenate([paths, grown], axis=1)
 
+    def _route_geometry(self):
+        """Segment length/direction and unwrapped vertex heading, cached."""
+        cached = getattr(self, "_route_geometry_cache", None)
+        if cached is not None and cached[0] is self.route:
+            return cached[1:]
+        delta = np.diff(self.route, axis=0)
+        length = np.linalg.norm(delta, axis=1)
+        direction = delta / np.maximum(length, 1e-9)[:, None]
+        heading = np.unwrap(self.heading)
+        self._route_geometry_cache = (self.route, length, direction, heading)
+        return length, direction, heading
+
+    def route_station(self, points):
+        """(arc station, signed left offset) of each point on the route.
+
+        Projected onto the segment either side of the nearest vertex, so the
+        station is continuous rather than snapping vertex to vertex.
+        """
+        points = np.asarray(points, dtype=float).reshape(-1, 2)
+        length, direction, _ = self._route_geometry()
+        last = len(length) - 1
+        nearest = self.tree.query(points)[1]
+        best_s = np.zeros(len(points))
+        best_l = np.zeros(len(points))
+        best_d = np.full(len(points), np.inf)
+        for seg in (np.clip(nearest - 1, 0, last), np.clip(nearest, 0, last)):
+            start = self.route[seg]
+            rel = points - start
+            along = np.clip(np.einsum("ij,ij->i", rel, direction[seg]),
+                            0.0, length[seg])
+            foot = start + direction[seg] * along[:, None]
+            off = points - foot
+            dist = np.linalg.norm(off, axis=1)
+            left = direction[seg, 0] * off[:, 1] - direction[seg, 1] * off[:, 0]
+            better = dist < best_d
+            best_d = np.where(better, dist, best_d)
+            best_s = np.where(better, self.arc[seg] + along, best_s)
+            best_l = np.where(better, left, best_l)
+        return best_s, best_l
+
+    def route_curvature(self, point, span_m):
+        """Mean route curvature over span_m ahead of point's station, 1/m.
+
+        The stretch a scored arc covers, so it is the turn the planner is
+        actually being asked to make.
+        """
+        if len(self.route) < 2:
+            return 0.0
+        _, _, heading = self._route_geometry()
+        start = float(self.route_station([point])[0][0])
+        end = min(start + max(float(span_m), 0.0), float(self.arc[-1]))
+        if end - start < 1e-3:
+            return 0.0
+        turn = np.interp(end, self.arc, heading) - \
+            np.interp(start, self.arc, heading)
+        return float(turn / (end - start))
+
+    def _route_obstacle_paths(self, paths, span_m, reach_m):
+        """The scored arc continued ALONG THE ROUTE, out to the veto horizon.
+
+        Each candidate keeps the offset from the route it ended at; the tail
+        stops at the route's end. See OBSTACLE_EXTENSION.
+        """
+        extra = float(reach_m) - float(span_m)
+        if extra <= 0.0 or len(self.route) < 2:
+            return paths
+        spacing = float(span_m) / self.steps
+        count = int(math.ceil(extra / spacing))
+        if count <= 0:
+            return paths
+        _, _, heading = self._route_geometry()
+        tail = paths[:, -1, :]
+        station, lateral = self.route_station(tail[:, :2])
+        k = np.arange(1, count + 1)[None, :] * spacing
+        s = np.minimum(station[:, None] + k, self.arc[-1])
+        yaw = np.interp(s, self.arc, heading)
+        xs = np.interp(s, self.arc, self.route[:, 0]) - \
+            np.sin(yaw) * lateral[:, None]
+        ys = np.interp(s, self.arc, self.route[:, 1]) + \
+            np.cos(yaw) * lateral[:, None]
+        grown = np.stack([xs, ys, yaw], axis=2)
+        return np.concatenate([paths, grown], axis=1)
+
+    def _obstacle_clearance(self, paths, span_m, points, query):
+        """Per-candidate clearance to the obstacle points, by OBSTACLE_EXTENSION.
+
+        query(flat_xy, points) -> distances, so the CPU and GPU planners
+        share this one rule rather than each carrying a copy of it.
+        """
+        def clearance(watched):
+            flat = watched[:, :, :2].reshape(-1, 2)
+            return np.asarray(query(flat, points)).reshape(
+                len(watched), -1).min(axis=1)
+
+        clear = clearance(self._obstacle_paths(
+            paths, span_m, OBSTACLE_PREVIEW_M))
+        if getattr(self, "obstacle_extension", OBSTACLE_EXTENSION) == "either":
+            routed = self._route_obstacle_paths(
+                paths, span_m, OBSTACLE_PREVIEW_M)
+            if routed is not paths:
+                clear = np.maximum(clear, clearance(routed))
+        return clear
+
     def plan(self, state, obstacles=(), speed_cap=None, last_yaw_rate=0.0,
              last_speed=None, obstacle_floor_m=OBSTACLE_FLOOR_M,
              rejected_yaw_rates=None, candidate_veto=None):
@@ -474,7 +594,6 @@ class DwaPlanner:
             return 0.0, 0.0, "OFF_BAND"
         if len(obstacles):
             pts = np.asarray(obstacles, dtype=float).reshape(-1, 2)
-            watched = self._obstacle_paths(paths, span, OBSTACLE_PREVIEW_M)
             # Nearest-neighbour rather than every pair. The brute force this
             # replaces materialised candidates x steps x points distances -
             # 126 x 65 x 2000 is 16 million per cycle, 371 ms on this NUC,
@@ -483,9 +602,11 @@ class DwaPlanner:
             # them without changing this would have been a stall waiting
             # for a crowded frame.
             from scipy.spatial import cKDTree
-            flat_watched = watched[:, :, :2].reshape(-1, 2)
-            distance, _ = cKDTree(pts).query(flat_watched, workers=-1)
-            clear = distance.reshape(len(pairs), -1).min(axis=1)
+            obstacle_tree = cKDTree(pts)
+            clear = self._obstacle_clearance(
+                paths, span, pts,
+                lambda flat, _points: obstacle_tree.query(
+                    flat, workers=-1)[0])
         else:
             clear = np.full(len(pairs), np.inf)
         ok &= clear >= float(obstacle_floor_m)

@@ -262,6 +262,14 @@ class DwaFollower(WaypointFollower):
                                               dwa_core.SIM_DISTANCE_M)),
             grace=float(rospy.get_param("~band_grace", 0.0)),
             route_mask=RouteMask(rospy.get_param("~drivable_mask")))
+        self.planner.obstacle_extension = str(rospy.get_param(
+            "~obstacle_extension", dwa_core.OBSTACLE_EXTENSION))
+        if self.planner.obstacle_extension not in \
+                dwa_core.OBSTACLE_EXTENSION_MODES:
+            raise ValueError(
+                "~obstacle_extension must be one of %s, got %r" % (
+                    ", ".join(dwa_core.OBSTACLE_EXTENSION_MODES),
+                    self.planner.obstacle_extension))
         self.anchor = StateAnchor(
             gain=float(rospy.get_param("~anchor_gain", DEFAULT_GAIN)))
         self.last_command_stamp = None
@@ -285,8 +293,12 @@ class DwaFollower(WaypointFollower):
                          self.on_accepted_command, queue_size=1)
         rospy.loginfo(
             "DWA profile: sim %.2f m, %d speeds x %d yaw rates, band and "
-            "drivable mask as hard rejects", self.planner.distance_m,
-            len(dwa_core.speed_samples()), len(dwa_core.yaw_samples()))
+            "drivable mask as hard rejects, obstacle tail %s to %.1f m, "
+            "threat corridor %s",
+            self.planner.distance_m,
+            len(dwa_core.speed_samples()), len(dwa_core.yaw_samples()),
+            self.planner.obstacle_extension, dwa_core.OBSTACLE_PREVIEW_M,
+            self.threat_corridor)
 
     def on_gate_status(self, message):
         """Track how long the gate has been refusing, and why."""
@@ -416,7 +428,11 @@ class DwaFollower(WaypointFollower):
         blocks, points = corridor_obstacle_points(
             self.cluster_summary, OBSTACLE_HALF_WIDTH_M,
             max_distance_m=PLAN_AHEAD_M,
-            exclude_track_ids=self.planner_excluded_track_ids())
+            exclude_track_ids=self.planner_excluded_track_ids(),
+            # This cycle's frame, set by corridor_threat just before: what
+            # stands round the bend, and on the chair's own line, as well as
+            # the straight strip.
+            route_frame=getattr(self, "threat_route_frame", None))
         if not blocks or not points:
             return ()
         heading = np.array([math.cos(state[2]), math.sin(state[2])])

@@ -71,8 +71,8 @@ from body_frame import (CHAIR_CENTRE_IN_BODY_XYZ, REFERENCE_BODY,
 from cluster_guard import (ACCUMULATION_S as CLUSTER_ACCUMULATION_S,
                            BYPASS_EDGE_KEEP_M, BYPASS_OFFSET_MAX_M,
                            BYPASS_OFFSET_MIN_M, BYPASS_OFFSETS,
-                           BYPASS_PROBE_AHEAD_M, GO_ROUND, Threat,
-                           PERSON_BYPASS, PERSON_LABEL,
+                           BYPASS_PROBE_AHEAD_M, CLEAR, GO_ROUND, Threat,
+                           PERSON_BYPASS, PERSON_LABEL, RouteFrame, WAIT,
                            avoidance_decision, bypass_offsets_for_room,
                            is_stale, matching_threats, nearest_threat,
                            parse_summary)
@@ -117,6 +117,25 @@ MAX_JERK = 0.36
 CONTROL_HZ = 10.0
 
 CORRIDOR_HALF_WIDTH = 0.45
+# Which corridor ordinary objects are judged in. "route" (2026-11-08) judges
+# them against the route ahead (cluster_guard.RouteFrame): in a bend the
+# straight strip runs off the outside of the curve into whatever stands
+# there, and at the J corner that was the outer wall, read as a parked
+# obstacle on the route 7-8 m out, which armed STATIC_OBJECT_BYPASS and a
+# side-commit against the route's own left turn (11-04; 11-07 drives 2, 3).
+# The straight strip still applies where it must: a shifted (way-round)
+# corridor, no TRACKING fix, a route not yet locked, and the gate zone
+# below. ~threat_corridor straight puts the old behaviour back.
+THREAT_CORRIDOR_MODES = ("route", "straight")
+THREAT_CORRIDOR = "route"
+# The gate zone: safety_gate stops for any return inside a HALF_WIDTH_M
+# straight strip out to its stopping envelope + FORWARD_CHECK_EXTRA_M.
+# Something there that is not on the route is still reported - else the
+# follower drives on blind and the gate hard-stops it (GATE_STALL) - but as
+# on_route=False: it may slow or stop the chair, never authorise a bypass.
+# test_route_frame_guard pins the pair against safety_gate.
+GATE_ZONE_HALF_WIDTH_M = 0.5
+GATE_ZONE_EXTRA_M = 0.6
 # A person gets a wider stop corridor than the geometry handed to the
 # avoidance planner.  This keeps the DWA obstacle corridor unchanged while
 # catching a walking person's body at the edge of the route.
@@ -265,6 +284,16 @@ class WaypointFollower:
             raise rospy.ROSInitException(str(error))
         self.waypoints = np.array(
             [[w["x"], w["y"]] for w in route["waypoints"]], dtype=np.float64)
+        self.route_arc = np.concatenate([[0.0], np.cumsum(
+            np.linalg.norm(np.diff(self.waypoints, axis=0), axis=1))])
+        self.threat_corridor = str(rospy.get_param(
+            "~threat_corridor", THREAT_CORRIDOR))
+        if self.threat_corridor not in THREAT_CORRIDOR_MODES:
+            raise rospy.ROSInitException(
+                "~threat_corridor must be one of %s, got %r" % (
+                    ", ".join(THREAT_CORRIDOR_MODES), self.threat_corridor))
+        rospy.loginfo("object threat corridor: %s", self.threat_corridor)
+        self.threat_route_frame = None
         self.band = SafetyBand(band_path)
         self.drivable_mask = RouteMask(mask_path)
         self.sensor_height = rospy.get_param("~sensor_height", 0.725)
@@ -682,6 +711,43 @@ class WaypointFollower:
                 stop_m + PERSON_STOP_RELEASE_MARGIN_M
         return blocking
 
+    def route_follow_chair_line(self):
+        """Whether the chair's own line counts as corridor (only bypassing).
+
+        A follower with no bypass of its own never drives off the route on
+        purpose, so the base answer is no. PersonBypassDwaFollower overrides.
+        """
+        return False
+
+    def make_route_frame(self, lateral_shift=0.0):
+        """A RouteFrame for this cycle, or None for the straight strip."""
+        if getattr(self, "threat_corridor", "straight") != "route" or \
+                abs(float(lateral_shift)) > 1e-9:
+            return None
+        pose = getattr(self, "pose_xy", None)
+        waypoints = getattr(self, "waypoints", None)
+        arc = getattr(self, "route_arc", None)
+        if pose is None or waypoints is None or arc is None or \
+                not getattr(self, "route_locked", False) or \
+                getattr(self, "tracking_state", "") != "TRACKING":
+            return None
+        frame = RouteFrame.build(
+            waypoints, arc, pose, getattr(self, "pose_yaw", 0.0),
+            getattr(self, "nearest_index", 0), PLAN_AHEAD_M)
+        if frame is not None:
+            frame.follow_chair_line = bool(self.route_follow_chair_line())
+        return frame
+
+    def gate_zone_m(self):
+        """How far the straight gate zone reaches for the follower's report."""
+        try:
+            radius = float(self.cluster_stop_radius())
+        except Exception:  # no ROS clock / motion yet: the fixed floor
+            radius = GUARD_STOP_MIN_M
+        if not math.isfinite(radius):
+            radius = GUARD_STOP_MIN_M
+        return radius + GATE_ZONE_EXTRA_M
+
     def cluster_threat(self, lateral_shift=0.0):
         """Nearest classified object overlapping its stop corridor.
 
@@ -694,14 +760,48 @@ class WaypointFollower:
         if self.cluster_summary is None:
             self.direct_person_threats = ()
             return Threat(0.0, MOVING, "no summary")
-        ordinary = nearest_threat(
-            self.cluster_summary, CORRIDOR_HALF_WIDTH, lateral_shift)
+        frame = self.make_route_frame(lateral_shift)
+        if abs(float(lateral_shift)) < 1e-9:
+            self.threat_route_frame = frame
+        ordinary_all = matching_threats(
+            self.cluster_summary, CORRIDOR_HALF_WIDTH, lateral_shift,
+            route_frame=frame)
+        ordinary = ordinary_all[0] if ordinary_all else None
+        if frame is not None and self.cluster_summary.usable:
+            # The gate zone, straight: see GATE_ZONE_HALF_WIDTH_M.
+            near = nearest_threat(
+                self.cluster_summary, GATE_ZONE_HALF_WIDTH_M, lateral_shift)
+            if near is not None and near.distance_m < self.gate_zone_m() \
+                    and (ordinary is None or
+                         near.distance_m < ordinary.distance_m):
+                on_route_ids = {threat.track_id for threat in ordinary_all
+                                if threat.track_id is not None}
+                near.on_route = near.track_id is not None and \
+                    near.track_id in on_route_ids
+                ordinary = near
         person = nearest_threat(
             self.cluster_summary, PERSON_STOP_HALF_WIDTH_M, lateral_shift,
             labels=(PERSON_LABEL,))
         bypass_people = matching_threats(
             self.cluster_summary, PERSON_BYPASS_HALF_WIDTH_M, lateral_shift,
             labels=(PERSON_LABEL,))
+        if frame is not None:
+            # People: the union of straight and route, never less caution.
+            routed = nearest_threat(
+                self.cluster_summary, PERSON_STOP_HALF_WIDTH_M,
+                lateral_shift, labels=(PERSON_LABEL,), route_frame=frame)
+            if routed is not None and (
+                    person is None or routed.distance_m < person.distance_m):
+                person = routed
+            seen = {threat.track_id for threat in bypass_people
+                    if threat.track_id is not None}
+            for threat in matching_threats(
+                    self.cluster_summary, PERSON_BYPASS_HALF_WIDTH_M,
+                    lateral_shift, labels=(PERSON_LABEL,),
+                    route_frame=frame):
+                if threat.track_id is None or threat.track_id not in seen:
+                    bypass_people.append(threat)
+            bypass_people.sort(key=lambda threat: threat.distance_m)
         self.direct_person_threats = tuple(
             bypass_people if self.cluster_summary.usable else ())
         committed_person = next((
@@ -781,6 +881,11 @@ class WaypointFollower:
                 self.blocked_since = now
         else:
             self.blocked_since = None
+        if threat is not None and not getattr(threat, "on_route", True):
+            # Off the route, in the gate zone: slow or stop, never go round
+            # (GATE_ZONE_HALF_WIDTH_M). CLEAR still drives the route, which
+            # turns the chair away from it; the gate checks the swept arc.
+            return WAIT if blocking else CLEAR
         return avoidance_decision(
             threat, blocking,
             None if self.blocked_since is None

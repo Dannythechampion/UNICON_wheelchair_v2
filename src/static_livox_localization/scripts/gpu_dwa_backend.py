@@ -246,12 +246,12 @@ def make_gpu_planner(base_class, core_module):
             try:
                 if len(obstacles):
                     points = np.asarray(obstacles, dtype=float).reshape(-1, 2)
-                    watched = self._obstacle_paths(
-                        paths, span, core_module.OBSTACLE_PREVIEW_M)
-                    flat_watched = watched[:, :, :2].reshape(-1, 2)
-                    distance, _ = self.distance_backend.obstacle_query(
-                        flat_watched, points)
-                    clear = distance.reshape(len(pairs), -1).min(axis=1)
+                    # The same straight-or-route rule as the CPU planner
+                    # (DwaPlanner._obstacle_clearance), on this backend.
+                    clear = self._obstacle_clearance(
+                        paths, span, points,
+                        lambda flat, pts: self.distance_backend.obstacle_query(
+                            flat, pts)[0])
                 else:
                     clear = np.full(len(pairs), np.inf)
                 ok &= clear >= float(obstacle_floor_m)
