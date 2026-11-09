@@ -1575,3 +1575,54 @@ def test_latency_mode_picks_how_the_plan_is_led():
     led = follower.led_state(state, 10.0)
     assert led[2] < 0.5 * 0.4 * 0.55
     assert list(led[3:]) == [0.8, 0.4]
+
+
+def test_smith_state_is_published_once_per_plan_as_json():
+    """The bag gets what Smith was given and produced, every cycle."""
+    module, Stamp = load_follower("dwa_follower")
+    follower = module.DwaFollower.__new__(module.DwaFollower)
+    follower.latency_mode = "smith"
+    follower.latency_s = 0.55
+    follower.measured_speed = 0.8
+    follower.measured_yaw_rate = 0.1
+    follower.pose_stamp = Stamp(9.9)
+    follower.wheel_status_stamp = Stamp(9.99)
+    follower.smith = module.SmithPredictor()
+    for i in range(15):
+        follower.smith.on_command(9.7 + 0.02 * i, 0.8, -0.4)
+    anchored = np.array([1.0, 2.0, 0.3, 0.8, 0.1])
+    led = follower.led_state(anchored, 10.0)
+
+    record = follower.smith_state_record(anchored, led, Stamp(10.0))
+    assert record["mode"] == "smith"
+    assert record["pose_age_s"] == pytest.approx(0.1)
+    assert record["anchor"] == pytest.approx(list(anchored))
+    assert record["lead_m"] > 0.0
+    # The right turn on the wire leads the heading right of the measured one.
+    assert record["lead_yaw_deg"] < 0.0
+    assert record["held_v"] == pytest.approx(0.8)
+    assert record["held_w"] == pytest.approx(-0.4)
+    assert record["horizon_s"] == pytest.approx(follower.smith.horizon_s,
+                                                abs=1e-3)
+    for key in ("model_v", "model_w", "resid_v", "resid_w", "n_cmds"):
+        assert key in record
+
+    sent = []
+    follower.smith_state_pub = types.SimpleNamespace(publish=sent.append)
+    module.String = lambda data: types.SimpleNamespace(data=data)
+    follower.publish_smith_state(anchored, led, Stamp(10.0))
+    assert len(sent) == 1
+    assert json.loads(sent[0].data)["held_w"] == pytest.approx(-0.4)
+
+    # A follower built without the publisher (older tests, replays) is quiet,
+    # and a broken publisher never reaches the control loop.
+    del follower.smith_state_pub
+    follower.publish_smith_state(anchored, led, Stamp(10.0))
+    follower.smith_state_pub = types.SimpleNamespace(
+        publish=lambda message: 1 / 0)
+    follower.publish_smith_state(anchored, led, Stamp(10.0))
+
+    follower.latency_mode = "lead"
+    lead = follower.smith_state_record(anchored, anchored, Stamp(10.0))
+    assert lead["horizon_s"] == pytest.approx(0.55)
+    assert "model_v" not in lead

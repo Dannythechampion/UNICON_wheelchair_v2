@@ -243,6 +243,26 @@ export한 키는 그 프로세스 안에만 있어서, 새 SSH 창에서는 다�
 파일 이름, 사용한 배포본(`readlink -f ~/wheelchair_deploys/current`), `LATENCY_MODE` 값,
 멈춘 위치와 `HOLD` 사유를 함께 적어 둔다. bag 다루는 법은 [`../debug_bags.md`](../debug_bags.md).
 
+블랙박스에는 `/dwa_follower/smith_state`도 들어간다. 계획 주기마다 JSON 한 줄이고, 담긴 값은 다음과 같다.
+
+- 플래너 pose 나이 `pose_age_s`
+- 지연 보상이 앞당긴 거리·각도 `lead_m`, `lead_yaw_deg`
+- Smith 모델과 바퀴 실측 `model_*`, `meas_*`
+- 베이스가 들고 있던 명령 `held_*`
+
+주행 로그도 같이 남는다. `go.sh`가 출발 직전에 켜고 `stop.sh`가 바퀴를 세운 뒤 끄며,
+결과는 `~/drive_logs/<시각>/`에 생긴다.
+
+| 파일 | 내용 |
+|---|---|
+| `drive.csv` | 10 Hz 행. Smith 값은 `sm_*` 열 |
+| `smith.jsonl` | smith_state 전체 |
+| `objects.jsonl` | 물체 목록 |
+| `events.log` | 사건 기록 |
+
+직접 다룰 때는 `bash <배포본>/source-linux/tools/drive_log.sh start|stop|status`를 쓴다.
+끄려면 `DRIVE_LOG=0`. 로거가 실패해도 출발과 정지는 막지 않는다.
+
 ## 첫 주행에서 볼 곳
 
 - J 모서리 바깥쪽 (89, -21): 마스크가 연석 선에 붙어 있다.
