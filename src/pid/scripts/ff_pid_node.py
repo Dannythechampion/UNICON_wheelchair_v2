@@ -119,6 +119,9 @@ class FFNode:
         route_path, mask_path = selected_route_and_mask(route_name)
         profile = str(rospy.get_param("~body_frame_profile", "builtin"))
         self.route = Route(route_path)
+        self.route_version = "original"
+        self.pending_replan = None
+        self.replan_resume_pending = False
         metadata = self.route.metadata
         if metadata.get("reference_point") != REFERENCE_CHAIR_CENTRE:
             raise rospy.ROSInitException("only chair-centred routes are allowed")
@@ -208,11 +211,14 @@ class FFNode:
         self.max_diag_age = float(rospy.get_param("~max_diag_age", MAX_DIAG_AGE_S))
         self.pub = rospy.Publisher("/cmd_vel", Twist, queue_size=1)
         self.status = rospy.Publisher("/ff_pid/status", String, queue_size=3)
+        self.replan_ack = rospy.Publisher("/ff_pid/replan/ack", String, queue_size=3)
         rospy.Subscriber("/fast_lio_icp/pose", PoseWithCovarianceStamped,
                          self.on_pose, queue_size=5)
         rospy.Subscriber("/Odometry", Odometry, self.on_odom, queue_size=50)
         rospy.Subscriber("/ff_pid/motion_policy", String,
                          self.on_motion_policy, queue_size=2)
+        rospy.Subscriber("/ff_pid/replan/stage", String, self.on_replan_stage, queue_size=1)
+        rospy.Subscriber("/ff_pid/replan/commit", String, self.on_replan_commit, queue_size=1)
         rospy.Subscriber("/wheel_status", Int16MultiArray,
                          self.on_wheel, queue_size=5)
         rospy.Subscriber("/fast_lio_icp/localization_diagnostics", DiagnosticArray,
@@ -291,6 +297,85 @@ class FFNode:
         _, _, yaw = tft.euler_from_matrix(matrix)
         return float(matrix[0, 3]), float(matrix[1, 3]), float(yaw)
 
+    def send_replan_ack(self, plan_id, phase, ok=True, reason=""):
+        self.replan_ack.publish(String(data=json.dumps({
+            "plan_id": plan_id, "phase": phase, "ok": bool(ok),
+            "reason": reason, "route": self.route_name,
+            "route_version": self.route_version}, separators=(",", ":"))))
+
+    def on_replan_stage(self, msg):
+        try:
+            data = json.loads(msg.data)
+            if not isinstance(data, dict):
+                return
+            plan_id, meta = data["plan_id"], data["metadata"]
+            if not isinstance(plan_id, str) or not plan_id or len(plan_id) > 90:
+                return
+            if not isinstance(meta, dict) or meta.get("route_key") != self.route_name:
+                raise ValueError("wrong route")
+            if meta.get("frame") != "map" or meta.get("reference_point") != "chair_centre":
+                raise ValueError("wrong coordinate frame")
+            if meta.get("source") != "runtime_static_astar":
+                raise ValueError("wrong route provenance")
+            if meta.get("body_frame_profile") != self.route.metadata.get("body_frame_profile"):
+                raise ValueError("body frame mismatch")
+            if meta.get("chair_centre_in_body_xyz") != self.route.metadata.get("chair_centre_in_body_xyz"):
+                raise ValueError("chair reference mismatch")
+            if len(meta.get("waypoints", [])) > 10000:
+                raise ValueError("route too long")
+            route = Route(meta)
+            if (not self.mask.contains_many(route.xy).all() or
+                    not self.mask.paths_are_contained([route.xy]).all()):
+                raise ValueError("route outside authorized drivable mask")
+            if (self.mask.clearance_many(route.xy) < 0.30 - 1e-9).any():
+                raise ValueError("insufficient boundary clearance")
+            with self.lock:
+                if self.route_version == plan_id:
+                    self.send_replan_ack(plan_id, "APPLIED")
+                    return
+                if (self.motion_policy != "STOP" or self.enabled or
+                        not self.obstacle_stopped or self.external_hold or
+                        self.wheel_pair is None or self.wheel_received is None or
+                        rospy.Time.now().to_sec() - self.wheel_received > self.max_wheel_age or
+                        max(abs(v) for v in self.wheel_pair) > self.stopped_wheel_threshold):
+                    self.send_replan_ack(plan_id, "PREPARED", False, "not safely stopped")
+                    return
+                self.pending_replan = (plan_id, route)
+                self.send_replan_ack(plan_id, "PREPARED")
+        except (TypeError, ValueError, KeyError, OverflowError) as exc:
+            rospy.logwarn_throttle(2, "Invalid replan stage: %s", exc)
+
+    def on_replan_commit(self, msg):
+        try:
+            data = json.loads(msg.data)
+            plan_id = data["plan_id"]
+            if not isinstance(plan_id, str):
+                return
+            with self.lock:
+                if self.route_version == plan_id:
+                    self.send_replan_ack(plan_id, "APPLIED")
+                    return
+                if (self.pending_replan is None or self.pending_replan[0] != plan_id or
+                        self.motion_policy != "STOP" or self.enabled or
+                        not self.obstacle_stopped or self.external_hold or
+                        self.wheel_pair is None or self.wheel_received is None or
+                        rospy.Time.now().to_sec() - self.wheel_received > self.max_wheel_age or
+                        max(abs(v) for v in self.wheel_pair) > self.stopped_wheel_threshold):
+                    self.send_replan_ack(plan_id, "APPLIED", False, "commit hold not satisfied")
+                    return
+                self.route = self.pending_replan[1]
+                self.core.route = self.route
+                self.core.reset()
+                self.last_tick = None
+                self.route_version = plan_id
+                self.replan_resume_pending = True
+                self.pending_replan = None
+                self.stop()
+                self.send_replan_ack(plan_id, "APPLIED")
+                self.publish_status("REPLAN_APPLIED")
+        except (ValueError, TypeError, KeyError) as exc:
+            rospy.logwarn_throttle(2, "Invalid replan commit: %s", exc)
+
     def on_motion_policy(self, msg):
         """Receive the atomic safety state + speed ceiling; ROS never enters Core."""
         now = rospy.Time.now().to_sec()
@@ -310,6 +395,8 @@ class FFNode:
                 raise ValueError("inconsistent, stale or wrong-route safety policy")
             if state == "CLEAR" and cap < self.core.max_v - 1e-6:
                 raise ValueError("CLEAR must not impose a speed limit")
+            if state != "STOP" and data.get("route_version", "original") != self.route_version:
+                raise ValueError("Safety and FF-PD route revisions differ")
         except (ValueError, TypeError, KeyError, OverflowError) as exc:
             with self.lock:
                 self.policy_received = None
@@ -329,7 +416,7 @@ class FFNode:
                 # Perception faults, bad geometry and mask boundary faults require
                 # an explicit new /ff_pid/start after the fault is resolved.
                 can_resume = data.get("reason") in (
-                    "PATH_OBSTACLE", "VERY_CLOSE_OBJECT", "RELEASE_CONFIRM")
+                    "PATH_OBSTACLE", "VERY_CLOSE_OBJECT", "RELEASE_CONFIRM", "REPLAN_HOLD")
                 if self.enabled:
                     self.resume_after_obstacle = can_resume
                     self.obstacle_stopped = can_resume
@@ -341,6 +428,9 @@ class FFNode:
             elif self.obstacle_stopped and self.resume_after_obstacle and not self.external_hold:
                 if self.readiness(now) is None:
                     self.core.reset()
+                    if self.replan_resume_pending:
+                        self.core.station = 0.0
+                        self.replan_resume_pending = False
                     self.enabled = True
                     self.obstacle_stopped = False
                     self.resume_after_obstacle = False
@@ -499,6 +589,9 @@ class FFNode:
                     self.motion_policy in ("CLEAR", "SLOW") and not self.external_hold):
                     if self.readiness(now) is None:
                         self.core.reset()
+                        if self.replan_resume_pending:
+                            self.core.station = 0.0
+                            self.replan_resume_pending = False
                         self.enabled = True
                         self.obstacle_stopped = False
                         self.resume_after_obstacle = False
@@ -590,7 +683,8 @@ class FFNode:
     def publish_status(self, state, result=None):
         if state != self.reason or result is not None:
             self.reason = state
-            values = {"state": state}
+            values = {"state": state, "route": self.route_name,
+                      "route_version": self.route_version}
             if result is not None:
                 values.update(result)  # publish same FF-PD prediction to Safety
             self.status.publish(String(data=json.dumps(values)))

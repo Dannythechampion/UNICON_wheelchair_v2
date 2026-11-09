@@ -29,7 +29,7 @@ WHEEL_TRACK_M = 0.46             # 유효 바퀴 간격 [m]; NUC 구동부와 �
 MIN_WHEEL_MPS = 0.30             # 좌·우 각각의 바퀴 최소 구동 속도 [m/s]
 MAX_WHEEL_MPS = 1.00             # 좌·우 각각의 바퀴 최대 구동 속도 [m/s]
 # 곡률·CTE 속도 상한과 SLOW 속도 계획은 Safety에서 수행합니다.
-CTE_DEADZONE_M = 0.10           # 작은 횡방향 오차를 무시하는 구간 [m]
+CTE_DEADZONE_M = 0.05           # 작은 횡방향 오차를 무시하는 구간 [m]
 D_DEADZONE_MPS = 0.02            # D항 입력(CTE 변화율) 데드존 [m/s]
 D_CLAMP_CURVATURE_INV_M = 0.15     # D항 곡률 제한 [1/m]; 최종 각속도 기여는 v를 곱함
 LINEAR_ACCEL_LIMIT_MPS2 = 0.80   # RUNNING 선가속도 제한 [m/s²]; 일반 감속은 제한 없음
@@ -111,8 +111,11 @@ def limit_running_command(previous_v, previous_w, target_v, target_w, dt,
 
 class Route:
     def __init__(self, filename):
-        with open(filename, encoding="utf-8") as f:
-            self.metadata = json.load(f)
+        if isinstance(filename, dict):
+            self.metadata = filename
+        else:
+            with open(filename, encoding="utf-8") as f:
+                self.metadata = json.load(f)
         data = self.metadata
         if data.get("frame") != "map" or data.get("count") != len(data.get("waypoints", [])):
             raise ValueError("bad route frame/count")

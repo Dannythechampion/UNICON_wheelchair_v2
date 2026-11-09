@@ -13,6 +13,7 @@ CHECK="$SCRIPT_DIR/pid_drive_check.py"
 MONITOR="$SCRIPT_DIR/pid_ready_monitor.py"
 NODE="$SCRIPT_DIR/ff_pid_node.py"
 SAFETY="$SCRIPT_DIR/pid_safety.py"
+ASTAR="$SCRIPT_DIR/pid_astar_planner.py"
 BAG_HELPER="$SCRIPT_DIR/pid_ready_bag.sh"
 STOP="$SCRIPT_DIR/pid_stop.sh"
 
@@ -88,7 +89,7 @@ loc_path="$(rospack find static_livox_localization 2>/dev/null || true)"
 [[ "$(readlink -f "$pid_path")" == "$(readlink -f "$REPO_ROOT/src/pid")" ]] || fail "잘못된 pid 패키지 경로: $pid_path"
 [[ "$(readlink -f "$loc_path")" == "$(readlink -f "$REPO_ROOT/src/static_livox_localization")" ]] || fail "잘못된 localization 패키지 경로: $loc_path"
 
-if timeout 3 rosnode list 2>/dev/null | grep -Ex '/ff_pid|/pid_safety' >/dev/null; then
+if timeout 3 rosnode list 2>/dev/null | grep -Ex '/ff_pid|/pid_safety|/pid_astar_planner' >/dev/null; then
   fail '/ff_pid 또는 /pid_safety가 이미 실행 중입니다. 중지하려면 pid_stop.sh를 실행하세요.'
 fi
 info="$(timeout 5 rostopic info /cmd_vel 2>/dev/null || true)"
@@ -133,11 +134,41 @@ for ((i=0; i<35; i++)); do
 done
 [[ "$ready" == 1 ]] || { bash "$STOP" >/dev/null 2>&1 || true; fail "FF-PD 노드 시작 실패. 로그: $LOG"; }
 
+REPLAN_ENABLED=false
+# A* is enabled for normal DRIVE by default; set PID_ENABLE_ASTAR=false to disable.
+if [[ "${PID_ENABLE_ASTAR:-true}" == "true" && "$TEST_CLEAR" != "true" ]]; then
+  REPLAN_ENABLED=true
+  printf '[WARN] Experimental autonomous A* detour enabled. Unvalidated on real wheelchair.\n' >&2
+fi
+if [[ "$REPLAN_ENABLED" == "true" ]]; then
+ASTAR_LOG="$RUN_DIR/pid_astar_${ROUTE}_$(date +%Y%m%d_%H%M%S).log"
+setsid nohup env OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+  python3 -u "$ASTAR" > "$ASTAR_LOG" 2>&1 < /dev/null &
+ASTAR_PID=$!
+printf '%s\n' "$ASTAR_PID" > "$RUN_DIR/pid_astar_planner.pid"
+astar_ready=0
+for ((i=0; i<35; i++)); do
+  if timeout 2 rosnode list 2>/dev/null | grep -Fx /pid_astar_planner >/dev/null; then
+    astar_ready=1; break
+  fi
+  kill -0 "$ASTAR_PID" 2>/dev/null || break
+  sleep 0.3
+done
+[[ "$astar_ready" == 1 ]] || {
+  bash "$STOP" >/dev/null 2>&1 || true
+  fail "A* planner startup failed: $ASTAR_LOG"
+}
+fi
 SAFETY_LOG="$RUN_DIR/pid_safety_${ROUTE}_$(date +%Y%m%d_%H%M%S).log"
 # Always overwrite the private ROS param: the previous test=true can survive node exit.
-SAFETY_PARAMS=("_route:=$ROUTE" "_test_clear:=false")
+RECEDING_ENABLED=false
+if [[ "${PID_ENABLE_RECEDING:-false}" == "true" && "$TEST_CLEAR" != "true" ]]; then
+  RECEDING_ENABLED=true
+  printf '[WARN] Experimental receding-object slowdown relaxation enabled.\n' >&2
+fi
+SAFETY_PARAMS=("_route:=$ROUTE" "_test_clear:=false" "_enable_replan:=$REPLAN_ENABLED" "_enable_receding:=$RECEDING_ENABLED")
 if [[ "$TEST_CLEAR" == true ]]; then
-  SAFETY_PARAMS=("_route:=$ROUTE" "_test_clear:=true")
+  SAFETY_PARAMS=("_route:=$ROUTE" "_test_clear:=true" "_enable_replan:=false" "_enable_receding:=false")
   printf '[WARN] TEST CLEAR: 장애물/마스크 감시 없이 CLEAR만 발행합니다.\n' >&2
 fi
 setsid nohup env OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
