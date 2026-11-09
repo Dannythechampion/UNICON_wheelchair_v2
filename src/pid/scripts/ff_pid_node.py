@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""UNICON FF–PD ROS1 실행 노드.
+"""UNICON FF–PD–Yaw ROS1 실행 노드.
 
 /ff_pid/start=True 명령 전까지 주행하지 않습니다.
 실제 /cmd_vel을 발행하므로 NUC wheel_cmd_tmp.py가 /ff_pid를 허용해야 합니다.
@@ -115,6 +115,7 @@ class FFNode:
             raise rospy.ROSInitException("node name must be exactly /ff_pid")
         # 경로는 A_to_D4처럼 이름만 입력합니다. 모든 경로가 같은 마스크를 씁니다.
         route_name = str(rospy.get_param("~route"))
+        self.route_name = route_name
         route_path, mask_path = selected_route_and_mask(route_name)
         profile = str(rospy.get_param("~body_frame_profile", "builtin"))
         self.route = Route(route_path)
@@ -143,16 +144,26 @@ class FFNode:
             kp=float(rospy.get_param("~kp", core_settings.KP)),
             kd=float(rospy.get_param("~kd", core_settings.KD)),
             ki=float(rospy.get_param("~ki", core_settings.KI)),
+            ff_gain=float(rospy.get_param("~ff_gain", core_settings.FF_GAIN)),
+            ff_preview_waypoints=int(rospy.get_param(
+                "~ff_preview_waypoints", core_settings.FF_PREVIEW_WAYPOINTS)),
+            yaw_gain=float(rospy.get_param("~yaw_gain", core_settings.YAW_GAIN)),
+            yaw_deadzone_deg=float(rospy.get_param(
+                "~yaw_deadzone_deg", core_settings.YAW_DEADZONE_DEG)),
+            yaw_curvature_scale_m=float(rospy.get_param(
+                "~yaw_curvature_scale_m", core_settings.YAW_CURVATURE_SCALE_M)),
             max_v=float(rospy.get_param("~max_v", core_settings.MAX_V_MPS)),
             max_w=float(rospy.get_param("~max_w", core_settings.MAX_W_RAD_S)),
             wheel_track=core_settings.WHEEL_TRACK_M,  # 구동부 0.46m와 항상 일치
             min_wheel=float(rospy.get_param("~min_wheel_mps", core_settings.MIN_WHEEL_MPS)),
             max_wheel=float(rospy.get_param("~max_wheel_mps", core_settings.MAX_WHEEL_MPS)),
-            lateral_accel=float(rospy.get_param("~max_lateral_accel", core_settings.LATERAL_ACCEL_MPS2)),
-            preview_m=float(rospy.get_param("~preview_m", core_settings.CURVATURE_PREVIEW_M)),
             cte_deadzone=float(rospy.get_param("~cte_deadzone_m", core_settings.CTE_DEADZONE_M)),
             d_deadzone=float(rospy.get_param("~d_deadzone_mps", core_settings.D_DEADZONE_MPS)),
-            d_limit=float(rospy.get_param("~d_clamp_rad_s", core_settings.D_CLAMP_RAD_S)),
+            # New parameter name reflects the true curvature unit [1/m].
+            # Preserve the old private parameter for existing launch scripts.
+            d_limit=float(rospy.get_param(
+                "~d_clamp_curvature_inv_m",
+                rospy.get_param("~d_clamp_rad_s", core_settings.D_CLAMP_CURVATURE_INV_M))),
             prediction_horizon_s=float(rospy.get_param("~prediction_horizon_s", core_settings.PREDICTION_HORIZON_S)),
             prediction_measured_s=float(rospy.get_param("~prediction_measured_s", core_settings.PREDICTION_MEASURED_S)),
             prediction_step_s=float(rospy.get_param("~prediction_step_s", core_settings.PREDICTION_STEP_S)),
@@ -178,6 +189,7 @@ class FFNode:
         self.odom_received = None
         self.pitch_deg = 0.0
         self.motion_policy = "STOP"
+        self.speed_limit_mps = 0.0
         self.policy_received = None
         self.obstacle_stopped = False
         self.resume_after_obstacle = False
@@ -280,20 +292,54 @@ class FFNode:
         return float(matrix[0, 3]), float(matrix[1, 3]), float(yaw)
 
     def on_motion_policy(self, msg):
-        state = str(msg.data).strip().upper()
-        if state not in ("CLEAR", "SLOW", "STOP"):
-            rospy.logwarn_throttle(5, "Unknown obstacle motion policy %s", state)
+        """Receive the atomic safety state + speed ceiling; ROS never enters Core."""
+        now = rospy.Time.now().to_sec()
+        try:
+            data = json.loads(msg.data)
+            if not isinstance(data, dict):
+                raise ValueError("policy must be an object")
+            state = data["state"]
+            cap = float(data["speed_limit_mps"])
+            stamp = float(data["stamp"])
+            if (state not in ("CLEAR", "SLOW", "STOP")
+                    or data.get("route") != self.route_name
+                    or not math.isfinite(cap) or not math.isfinite(stamp)
+                    or stamp > now + 0.2 or now - stamp > 0.5
+                    or not 0 <= cap <= self.core.max_v
+                    or ((state == "STOP") != (cap == 0.0))):
+                raise ValueError("inconsistent, stale or wrong-route safety policy")
+            if state == "CLEAR" and cap < self.core.max_v - 1e-6:
+                raise ValueError("CLEAR must not impose a speed limit")
+        except (ValueError, TypeError, KeyError, OverflowError) as exc:
+            with self.lock:
+                self.policy_received = None
+                self.speed_limit_mps = 0.0
+                self.motion_policy = "STOP"
+                self.resume_after_obstacle = False
+                self.obstacle_stopped = False
+                self.disable("SAFETY_POLICY_INVALID")
+            rospy.logerr_throttle(2, "Invalid safety policy: %s", exc)
             return
         with self.lock:
             self.motion_policy = state
-            self.policy_received = rospy.Time.now().to_sec()
+            self.speed_limit_mps = cap
+            self.policy_received = now
             if state == "STOP":
+                # Only a cleared physical obstacle may trigger automatic resume.
+                # Perception faults, bad geometry and mask boundary faults require
+                # an explicit new /ff_pid/start after the fault is resolved.
+                can_resume = data.get("reason") in (
+                    "PATH_OBSTACLE", "VERY_CLOSE_OBJECT", "RELEASE_CONFIRM")
                 if self.enabled:
-                    self.resume_after_obstacle = True
-                self.obstacle_stopped = True
-                self.disable("OBSTACLE_STOP")
+                    self.resume_after_obstacle = can_resume
+                    self.obstacle_stopped = can_resume
+                    self.disable("OBSTACLE_STOP" if can_resume else
+                                 "SAFETY_STOP: " + str(data.get("reason", "UNKNOWN")))
+                elif not can_resume:
+                    self.resume_after_obstacle = False
+                    self.obstacle_stopped = False
             elif self.obstacle_stopped and self.resume_after_obstacle and not self.external_hold:
-                if self.readiness(rospy.Time.now().to_sec()) is None:
+                if self.readiness(now) is None:
                     self.core.reset()
                     self.enabled = True
                     self.obstacle_stopped = False
@@ -311,6 +357,13 @@ class FFNode:
                 self.wheel_pair = (left, right)
                 self.wheel_received = rospy.Time.now().to_sec()
                 self.mode = mode
+                # Any MANUAL intervention revokes obstacle auto-resume.
+                # A later AUTO mode message alone cannot restart movement.
+                if mode != AUTO_MODE:
+                    self.resume_after_obstacle = False
+                    self.obstacle_stopped = False
+                    if self.enabled:
+                        self.disable("MANUAL_INTERVENTION")
                 if self.finishing:
                     if (abs(left) <= self.stopped_wheel_threshold and
                             abs(right) <= self.stopped_wheel_threshold):
@@ -471,7 +524,8 @@ class FFNode:
                     observation_id=self.pose_seq,
                     observation_time=self.gicp_stamp,
                     motion_policy=self.motion_policy,
-                    pitch_deg=self.pitch_deg)
+                    pitch_deg=self.pitch_deg,
+                    speed_limit_mps=self.speed_limit_mps)
                 px, py, _ = result["predicted_pose"]
                 result["predicted_in_mask"] = bool(self.mask.contains((px, py)))
                 if (result["station"] >= self.route.length - self.goal_tolerance and
@@ -483,10 +537,42 @@ class FFNode:
                     return
                 # Only normal RUNNING commands are limited. disable() sends
                 # zero immediately for NO_TRACKING and all other safety faults.
+                limiter_diagnostics = {}
                 command_v, command_w = core_settings.limit_running_command(
                     self.last_command_v, self.last_command_w,
                     result["v"], result["w"], dt,
-                    self.core.wheel_track, self.core.min_wheel, self.core.max_wheel)
+                    self.core.wheel_track, self.core.min_wheel, self.core.max_wheel,
+                    diagnostics=limiter_diagnostics)
+                result.update(limiter_diagnostics)
+                # Capture both control stages and effective tunings in /ff_pid/status.
+                # pid_ready_bag.sh already records this topic at controller rate.
+                result["route"] = self.route_name
+                result["safety_speed_limit_mps"] = self.speed_limit_mps
+                result["control_time_s"] = now
+                result["control_dt_s"] = dt
+                result["pose_used"] = pose
+                result["measured_v_mps"] = self.wheel[0]
+                result["measured_w_rad_s"] = self.wheel[1]
+                result["measured_wheel_left_mps"] = self.wheel_pair[0]
+                result["measured_wheel_right_mps"] = self.wheel_pair[1]
+                result["gicp_observation_id"] = self.pose_seq
+                result["gicp_observation_stamp_s"] = self.gicp_stamp
+                result["controller_params"] = {
+                    "kp": self.core.kp, "kd": self.core.kd, "ki": self.core.ki,
+                    "ff_gain": self.core.ff_gain,
+                    "ff_preview_waypoints": self.core.ff_preview_waypoints,
+                    "yaw_gain": self.core.yaw_gain,
+                    "yaw_deadzone_deg": self.core.yaw_deadzone_deg,
+                    "yaw_curvature_scale_m": self.core.yaw_curvature_scale_m,
+                    "cte_deadzone_m": self.core.cte_deadzone,
+                    "d_deadzone_mps": self.core.d_deadzone,
+                    "d_clamp_curvature_inv_m": self.core.d_limit,
+                    "max_v_mps": self.core.max_v, "max_w_rad_s": self.core.max_w,
+                    "linear_accel_mps2": core_settings.LINEAR_ACCEL_LIMIT_MPS2,
+                    "angular_accel_rad_s2": core_settings.ANGULAR_ACCEL_LIMIT_RAD_S2,
+                    "min_wheel_mps": self.core.min_wheel,
+                    "max_wheel_mps": self.core.max_wheel,
+                }
                 command = Twist()
                 command.linear.x = command_v
                 command.angular.z = command_w

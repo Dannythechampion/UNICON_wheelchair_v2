@@ -78,6 +78,8 @@ case "$MODE" in
       /mode_cmd \
       /cmd_vel \
       /ff_pid/status \
+      /ff_pid/motion_policy \
+      /pid_safety/status \
       /perception/objects_summary \
       /uart_tx_diag \
       /stop_watchdog/alarm \

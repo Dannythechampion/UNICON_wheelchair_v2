@@ -4,6 +4,7 @@
 Does not publish any driving or mode commands.
 """
 import argparse
+import json
 import math
 import os
 import sys
@@ -65,6 +66,93 @@ def watch_wheels(args):
     return 1
 
 
+
+def _alignment_result(args, station, route_length, dist, cte, yaw, tangent):
+    """Build one serializable snapshot; no drive commands or ROS side effects."""
+    heading_signed = math.atan2(math.sin(tangent - yaw), math.cos(tangent - yaw))
+    heading_deg = math.degrees(abs(heading_signed))
+    heading_limit_deg = math.degrees(args.max_heading_rad)
+    distance_ok = dist <= args.max_distance
+    heading_ok = abs(heading_signed) <= args.max_heading_rad
+    turn_direction = ("LEFT" if heading_signed > 0 else "RIGHT") if not heading_ok else None
+    # CTE > 0 means the chair is left of the route (route lies to its right).
+    # At a route endpoint the nearest point may be mostly forward/back, so
+    # avoid claiming a lateral direction when the cross-track component is tiny.
+    route_side = ("RIGHT" if cte > 0 else "LEFT") if (not distance_ok and
+                                                     abs(cte) > 0.2 * dist) else None
+    approach_m = max(0.0, dist - args.max_distance)
+
+    if heading_ok:
+        heading_guide = "경로 진행 방향 조건 충족 (오차 %.1f도)." % heading_deg
+    else:
+        side = "왼쪽" if turn_direction == "LEFT" else "오른쪽"
+        heading_guide = ("먼저 MANUAL로 %s 약 %.1f도 회전해 경로 진행 방향을 맞추세요."
+                         % (side, heading_deg))
+    if distance_ok:
+        distance_guide = "경로 거리 조건 충족 (%.2fm)." % dist
+    else:
+        side_text = (" 경로는 진행 방향 기준 %s에 있습니다." %
+                     ("오른쪽" if route_side == "RIGHT" else "왼쪽")
+                     if route_side else "")
+        distance_guide = ("다음으로 MANUAL로 경로 쪽에 접근하세요.%s "
+                          "경로까지 %.2fm, 허용 범위까지 최소 %.2fm 더 가까워져야 합니다."
+                          % (side_text, dist, approach_m))
+
+    ok = bool(distance_ok and heading_ok)
+    return {
+        "type": "drive_preflight",
+        "route": args.route,
+        "ok": ok,
+        "reason": "OK" if ok else "POSE_NOT_ALIGNED",
+        "message": "출발 위치 확인 완료" if ok else "출발 위치를 조정해주세요.",
+        "distance_m": round(dist, 3),
+        "cte_m": round(cte, 3),
+        "heading_error_deg": round(heading_deg, 2),
+        "distance_limit_m": args.max_distance,
+        "heading_limit_deg": round(heading_limit_deg, 2),
+        "station_m": round(station, 3),
+        "route_length_m": round(route_length, 3),
+        "distance_ok": distance_ok,
+        "heading_ok": heading_ok,
+        "turn_direction": turn_direction,
+        "turn_deg": round(heading_deg, 2) if not heading_ok else None,
+        "route_side": route_side,
+        "approach_m": round(approach_m, 3),
+        "guidance": [heading_guide, distance_guide],
+    }
+
+
+def _pose_failure_result(args, reason, message):
+    return {
+        "type": "drive_preflight",
+        "route": args.route,
+        "ok": False,
+        "reason": reason,
+        "message": message,
+        "distance_m": None,
+        "cte_m": None,
+        "heading_error_deg": None,
+        "distance_limit_m": args.max_distance,
+        "heading_limit_deg": round(math.degrees(args.max_heading_rad), 2),
+        "distance_ok": False,
+        "heading_ok": False,
+        "turn_direction": None,
+        "turn_deg": None,
+        "route_side": None,
+        "approach_m": None,
+        "guidance": [],
+    }
+
+
+def _emit_pose_result(args, result):
+    # --json: exactly one JSON line on stdout, readable diagnostics on stderr.
+    # Future Bluetooth bridge can parse the line without scraping Korean text.
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, allow_nan=False,
+                         separators=(",", ":")), flush=True)
+    return 0 if result["ok"] else 1
+
+
 def check_pose_on_route(args):
     import numpy as np
     import rospy
@@ -118,30 +206,36 @@ def check_pose_on_route(args):
         _, _, yaw = tft.euler_from_matrix(matrix)
         x, y = float(matrix[0, 3]), float(matrix[1, 3])
         if not np.isfinite([x, y, yaw]).all():
-            print("[FAIL] Invalid numeric pose", file=sys.stderr)
-            return 1
-        # Project onto the WHOLE route, not its first waypoint. The operator
-        # may pause and resume at any point along this same route.
+            print("[FAIL] Invalid numeric pose", file=sys.stderr, flush=True)
+            return _emit_pose_result(
+                args, _pose_failure_result(args, "POSE_INVALID", "위치 데이터가 올바르지 않습니다."))
+        # Compare with ANY station on the route, including mid-route re-entry.
         station, cte, dist, tangent = route.project(x, y)
-        heading_error_rad = abs(wrap(yaw - tangent))
+        result = _alignment_result(args, station, route.length, dist, cte, yaw, tangent)
+        output = sys.stderr if args.json else sys.stdout
         print("[INFO] Current chair centre (map): x=%.3f, y=%.3f, yaw=%.1f deg" %
-              (x, y, math.degrees(yaw)))
+              (x, y, math.degrees(yaw)), file=output, flush=True)
         print("[INFO] Nearest route progress: s=%.2f / %.2f m" %
-              (station, route.length))
+              (station, route.length), file=output, flush=True)
         print("[INFO] Path offset: %.3f m (CTE %+0.3f m), heading error %.1f deg" %
-              (dist, cte, math.degrees(heading_error_rad)))
-        # These match the FF node's default path/heading HOLD thresholds.
-        # They are NOT constraints on distance from the START waypoint.
-        if dist > args.max_distance or heading_error_rad > args.max_heading_rad:
-            print("[FAIL] Current pose is not safely aligned to route "
+              (dist, cte, result["heading_error_deg"]), file=output, flush=True)
+        if not result["ok"]:
+            print("[FAIL] Current pose is not aligned to selected route "
                   "(limit: %.2f m / %.1f deg). Keep MANUAL." %
                   (args.max_distance, math.degrees(args.max_heading_rad)),
-                  file=sys.stderr)
-            return 1
-        print("[OK] Current position is compatible with route (mid-route resume allowed)")
-        return 0
-    print("[FAIL] No fresh map pose: %s" % last_issue, file=sys.stderr)
-    return 1
+                  file=sys.stderr, flush=True)
+            for idx, guide in enumerate(result["guidance"], 1):
+                print("[GUIDE %d/2] %s" % (idx, guide), file=output, flush=True)
+            if not result["distance_ok"]:
+                print("[INFO] 휠체어는 옆으로 직접 이동할 수 없으므로 주변 공간을 확인하며 조향하세요.",
+                      file=output, flush=True)
+        else:
+            print("[OK] Current position is compatible with route (mid-route resume allowed)",
+                  file=output, flush=True)
+        return _emit_pose_result(args, result)
+    print("[FAIL] No fresh map pose: %s" % last_issue, file=sys.stderr, flush=True)
+    return _emit_pose_result(args, _pose_failure_result(
+        args, "POSE_UNAVAILABLE", "유효한 최신 위치를 수신하지 못했습니다: %s" % last_issue))
 
 
 def show_position(args):
@@ -279,9 +373,11 @@ def main():
     wheels.add_argument("--timeout", type=float, default=6.0)
     start = sub.add_parser("pose-on-route", help="Check current chair pose against ANY station on route")
     start.add_argument("--route", required=True)
-    start.add_argument("--max-distance", type=float, default=0.70)
-    start.add_argument("--max-heading-rad", type=float, default=1.50)
+    start.add_argument("--max-distance", type=float, default=1.00)
+    start.add_argument("--max-heading-rad", type=float, default=math.pi / 6)
     start.add_argument("--timeout", type=float, default=5.0)
+    start.add_argument("--json", action="store_true",
+                       help="emit one machine-readable drive_preflight JSON line on stdout")
     watch = sub.add_parser("watch", help="Quiet drive status and periodic progress")
     watch.add_argument("--route", required=True)
     sub.add_parser("position", help="Print current GICP Map pose only")
@@ -294,8 +390,17 @@ def main():
         if args.command == "position":
             return show_position(args)
         return watch_states(args)
-    except (ImportError, ValueError, KeyError, OSError, RuntimeError) as exc:
-        print("[FAIL] Preflight: %s" % exc, file=sys.stderr)
+    except Exception as exc:
+        # Pose preflight must fail closed with a typed JSON result even if
+        # rospy/ROS package setup raises an exception outside the usual set.
+        # Preserve the older exception behavior for all other subcommands.
+        if args.command != "pose-on-route" and not isinstance(
+                exc, (ImportError, ValueError, KeyError, OSError, RuntimeError)):
+            raise
+        print("[FAIL] Preflight: %s" % exc, file=sys.stderr, flush=True)
+        if args.command == "pose-on-route":
+            return _emit_pose_result(args, _pose_failure_result(
+                args, "CHECK_ERROR", "출발 위치 점검 오류: %s" % exc))
         return 1
 
 

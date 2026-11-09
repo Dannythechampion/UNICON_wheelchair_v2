@@ -16,7 +16,19 @@ SAFETY="$SCRIPT_DIR/pid_safety.py"
 BAG_HELPER="$SCRIPT_DIR/pid_ready_bag.sh"
 STOP="$SCRIPT_DIR/pid_stop.sh"
 
-fail() { printf '[FAIL] %s\n' "$*" >&2; exit 1; }
+# JSON event lines are intentionally mixed with human-readable shell output:
+# a future bridge must select frames with type=drive_event / drive_preflight.
+# Never confuse script launch with successful motor/controller START.
+emit_drive_event() {
+  local status="$1" reason="$2" detail="$3"
+  python3 -c 'import json,sys; print(json.dumps({"type":"drive_event","status":sys.argv[1],"reason":sys.argv[2],"route":sys.argv[3] or None,"message":sys.argv[4]},ensure_ascii=False,separators=(",",":")),flush=True)' \
+    "$status" "$reason" "${ROUTE:-}" "$detail" || true
+}
+fail() {
+  printf '[FAIL] %s\n' "$*" >&2
+  emit_drive_event REJECTED SCRIPT_CHECK_FAILED "$*" 
+  exit 1
+}
 need() { [[ -f "$1" ]] || fail "파일 없음: $1"; }
 
 ROUTES=(A_to_D4 A_to_D5 D4_to_A D4_to_D5 D5_to_A D5_to_D4)
@@ -87,6 +99,14 @@ fi
 # Read-only preflight. Compares chair pose with the WHOLE selected route, not its START waypoint.
 python3 "$MONITOR" --check-ready || fail 'READY 점검 실패. 수동 모드를 유지합니다.'
 python3 "$CHECK" wheel --mode MANUAL --stopped || fail 'MANUAL 정차 상태를 확인할 수 없습니다.'
+# Require a compatible pose anywhere on the selected route before launching FF-PD.
+# The check prints turn-first, approach-second guidance on refusal.
+# The pose checker emits one typed JSON line on stdout for the future app bridge
+# and the two human-readable alignment guides to stderr. No continuous polling.
+if ! python3 "$CHECK" pose-on-route --json --route "$ROUTE" \
+  --max-distance 1.0 --max-heading-rad 0.5235987756; then
+  fail '출발 위치 점검 실패. MANUAL로 조정한 뒤 주행 시작을 다시 누르세요.'
+fi
 
 if [[ -f "$BAG_HELPER" ]]; then
   bag_status="$(bash "$BAG_HELPER" status 2>&1 || true)"
@@ -138,6 +158,33 @@ timeout 5 rostopic echo -n1 /pid_safety/status >/dev/null 2>&1 || {
   bash "$STOP" >/dev/null 2>&1 || true
   fail "Safety 상태를 받지 못했습니다. 로그: $SAFETY_LOG"
 }
+# An active process is insufficient: wait for a fresh valid policy before AUTO.
+if [[ "$TEST_CLEAR" != true ]]; then
+  if ! python3 - "$ROUTE" <<'PY'
+import json, sys, time
+import rospy
+from std_msgs.msg import String
+route = sys.argv[1]
+rospy.init_node("pid_safety_preflight", anonymous=True, disable_signals=True)
+deadline = time.monotonic() + 6.0
+while time.monotonic() < deadline:
+    try:
+        msg = rospy.wait_for_message("/ff_pid/motion_policy", String, timeout=1.0)
+        data = json.loads(msg.data)
+        now = rospy.Time.now().to_sec()
+        if (data.get("route") == route and data.get("state") in ("CLEAR", "SLOW")
+                and abs(now - float(data["stamp"])) <= 0.5
+                and 0.0 < float(data["speed_limit_mps"]) <= 0.8):
+            sys.exit(0)
+    except (rospy.ROSException, KeyError, TypeError, ValueError):
+        pass
+sys.exit(1)
+PY
+  then
+    bash "$STOP" >/dev/null 2>&1 || true
+    fail "Safety가 주행 가능한 최신 정책을 발행하지 않았습니다. 로그: $SAFETY_LOG"
+  fi
+fi
 
 ARMED=1
 safe_stop_on_exit() {
@@ -160,6 +207,8 @@ python3 "$CHECK" wheel --mode AUTO --stopped || fail 'AUTO 전환 및 정차 상
 reply="$(timeout 7 rosservice call /ff_pid/start 'data: true' 2>&1)" || fail "주행 시작 서비스 실패: $reply"
 printf '%s\n' "$reply" | grep -Eq '^success: [Tt]rue' || fail "제어기가 시작을 거부했습니다: $reply"
 
+# The START service returned success. The drive process MUST continue running.
+emit_drive_event STARTED START_CONFIRMED "FF-PD START 서비스가 주행을 승인했습니다."
 printf '\n[RUN] %s 경로 주행 시작\n' "$ROUTE"
 printf '[INFO] 현재 위치부터 선택 경로를 추종합니다. 시작점 일치 조건은 없습니다.\n'
 printf '[INFO] 별도 터미널에서: bash src/pid/scripts/pid_stop.sh\n'
