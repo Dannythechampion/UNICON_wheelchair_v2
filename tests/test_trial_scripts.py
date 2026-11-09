@@ -268,3 +268,38 @@ def test_route2_keys_name_both_directions_on_one_mask():
 def test_field_marks_reach_the_black_box():
     assert "/field_mark" in script("start_wheelchair_localization.sh")
     assert "get_num_connections" in script("mark.py")
+
+
+def test_go_starts_the_drive_log_after_its_checks_and_before_commanding():
+    """The start of the drive is in the log, and a logger that will not start
+    never refuses the drive."""
+    go = script("go.sh")
+    hook = go.index("drive_log.sh")
+    assert go.index("localization_diagnostics") < hook
+    assert hook < go.index("rostopic pub -1 /mode_cmd")
+    assert 'bash "$DRIVE_LOG_SH" start || true' in go
+
+
+def test_stop_ends_the_drive_log_only_after_the_wheels():
+    stop = script("stop.sh")
+    assert stop.index("data: false") < stop.index("drive_log.sh")
+    assert stop.index("/mode_cmd") < stop.index("drive_log.sh")
+    assert 'bash "$DRIVE_LOG_SH" stop || true' in stop
+
+
+def test_the_drive_log_never_fails_whoever_calls_it():
+    text = script("drive_log.sh")
+    assert "set -e" not in text
+    assert text.rstrip().endswith("exit 0")
+    assert "[d]rive_logger.py" in text
+    assert (TOOLS / "drive_log" / "drive_logger.py").is_file()
+    assert (TOOLS / "drive_log" / "route_threat.py").is_file()
+
+
+def test_the_bringup_sweeps_a_leftover_drive_logger_and_bags_smith_state():
+    start = script("start_wheelchair_localization.sh").replace("\r\n", "\n")
+    first = re.search(r"^for pattern in (.+?); do$", start, re.M).group(1)
+    assert "'[d]rive_logger'" in first
+    assert "'[d]rive_logger'" in _keep_branch(start)
+    blackbox = start.split("blackbox_$(date", 1)[1].split("live_blackbox.log", 1)[0]
+    assert "/dwa_follower/smith_state" in blackbox

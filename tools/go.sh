@@ -22,6 +22,13 @@ STATE="$(timeout 3 rostopic echo -n1 /fast_lio_icp/localization_diagnostics 2>/d
 [ "$STATE" = "TRACKING" ] \
   || fail "localization is '${STATE:-silent}', not TRACKING"
 
+# The drive log starts before the first command, so the start is in it. A
+# logger that will not start is reported, never a reason to refuse the drive.
+DRIVE_LOG_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/drive_log.sh"
+if [ -f "$DRIVE_LOG_SH" ]; then
+  bash "$DRIVE_LOG_SH" start || true
+fi
+
 echo "auto mode..."
 rostopic pub -1 /mode_cmd std_msgs/Int16 65 >/dev/null
 

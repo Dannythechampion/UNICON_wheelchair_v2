@@ -128,6 +128,56 @@ class PersonBypassDwaFollower(DwaFollower):
 
     def publish_permit(self, permit):
         self.permit_pub.publish(String(data=permit.to_json()))
+
+    def route_follow_chair_line(self):
+        """While a bypass holds the chair off the route, its own line counts.
+
+        Without it a chair stepped 0.6 m aside would not see what stands
+        dead ahead on the line it is actually driving. Only then: with it on
+        all the time, a chair pushed outside the J corner found the outer
+        wall on "its" line and re-armed the bypass that pushed it there.
+        """
+        return bool(getattr(self, "_committed_bypass_side", 0)) or \
+            self.post_pass_recovery_active()
+
+    def permit_route_offset(self, permit):
+        """The permit target's signed offset from the route, or None.
+
+        Projected through this cycle's RouteFrame. In a bend the chair-frame
+        target_y is not a route offset at all: on 11-07 the J outer wall sat
+        right of the route but read +0.2...+1.2 m (left) in the chair frame,
+        so the bypass committed RIGHT and vetoed the route's own left turn.
+        """
+        frame = getattr(self, "threat_route_frame", None)
+        x = getattr(permit, "target_x_m", None)
+        y = getattr(permit, "target_y_m", None)
+        if frame is None or x is None or y is None:
+            return None
+        try:
+            _, offset = frame.project([(float(x), float(y))])
+            value = float(offset[0])
+        except (TypeError, ValueError, IndexError):
+            return None
+        return value if math.isfinite(value) else None
+
+    def route_turn_rate(self, speed_mps):
+        """Yaw rate that follows the route's own curvature at this speed."""
+        planner = getattr(self, "planner", None)
+        pose = getattr(self, "pose_xy", None)
+        curvature = getattr(planner, "route_curvature", None)
+        if curvature is None or pose is None:
+            return 0.0
+        try:
+            span = planner.preview_distance(
+                getattr(self, "current_speed", None))
+            kappa = float(curvature(pose, span))
+            value = float(speed_mps) * kappa
+        except (TypeError, ValueError, AttributeError):
+            return 0.0
+        if not math.isfinite(value):
+            return 0.0
+        limit = float(dwa_core.MAX_YAW_RATE)
+        return max(-limit, min(limit, value))
         self._permit_published_this_cycle = True
 
     def static_object_commitment_active(self, now_s=None):
@@ -442,6 +492,12 @@ class PersonBypassDwaFollower(DwaFollower):
         # A side is only as wide as its narrowest point over the maneuver.
         lo = max(value[1] for value in limits)
         hi = min(value[2] for value in limits)
+        route_offset = self.permit_route_offset(permit)
+        if route_offset is not None:
+            # Where the object is on the route, not where it looks from a
+            # chair that is already turning (permit_route_offset).
+            return self.room_preferred_side(
+                lo, hi, route_offset, 0.0, float(permit.min_clearance_m))
         return self.room_preferred_side(
             lo, hi, current_lateral, float(permit.target_y_m),
             float(permit.min_clearance_m))
@@ -467,6 +523,9 @@ class PersonBypassDwaFollower(DwaFollower):
             # into the 0.80 m right side while v9 exposed 2.55 m on the left.
             # Raw point sweeps and the hard route mask still veto collisions.
             lateral = float(permit.target_y_m or 0.0)
+            route_offset = self.permit_route_offset(permit)
+            if route_offset is not None:
+                lateral = route_offset
             preferred = self.v9_room_preferred_side(permit)
             if preferred:
                 self._committed_bypass_side = preferred
@@ -619,11 +678,19 @@ class PersonBypassDwaFollower(DwaFollower):
             self.reset_bypass_commitment()
             self.publish_permit(permit)
             return ordinary
+        target_x = threat.distance_m
+        if getattr(threat, "route_s_m", None) is not None and \
+                threat.centre_forward_m is not None:
+            # distance_m is travel along the route for a route-judged
+            # threat; the permit's target_x is a chair-frame forward
+            # distance, like target_y beside it.
+            target_x = max(0.0, float(threat.centre_forward_m) - float(
+                threat.half_forward_m or 0.0))
         permit = static_obstacle_permit(
             now_s=now.to_sec(),
             observed_stamp_s=threat.observed_stamp_s,
             track_id=threat.track_id,
-            target_x_m=threat.distance_m,
+            target_x_m=target_x,
             target_y_m=threat.lateral_m,
             motion=threat.motion,
             directly_observed=threat.directly_observed,
@@ -644,6 +711,28 @@ class PersonBypassDwaFollower(DwaFollower):
         else:
             self.reset_bypass_commitment()
         return ordinary
+
+    SIDE_VETO_MARGIN_RPS = 2.0 * dwa_core.MAX_YAW_RATE / max(
+        dwa_core.YAW_SAMPLES - 1, 1)
+
+    def side_veto_bound(self, speed_mps, committed_side):
+        """The yaw rate a committed side may not turn past, the wrong way.
+
+        It was zero: a RIGHT commit forbade every left turn for the life of
+        the permit, including the turn the route itself needs. At the J
+        corner (radius 2.5 m, +0.24 rad/s at 0.6 m/s) that left the planner
+        straight or right while the route went left, and the chair ran off
+        the outside of the bend (11-07: planned w 0/-0.06 against +0.24).
+        Now the line is the route's own turn rate, one yaw sample further
+        toward the forbidden side so the sample that follows the route is
+        never rounded away. Where the route is straighter than one sample
+        the line is zero - exactly the old rule.
+        """
+        route_w = self.route_turn_rate(speed_mps)
+        margin = self.SIDE_VETO_MARGIN_RPS
+        if abs(route_w) < margin:
+            return 0.0
+        return route_w - float(committed_side) * margin
 
     def planner_candidate_veto(self, now, _decision, command_for_target):
         recovery_yaw_cap = self.post_pass_yaw_cap()
@@ -671,11 +760,15 @@ class PersonBypassDwaFollower(DwaFollower):
             if recovery_yaw_cap is not None and \
                     abs(float(target_w)) > recovery_yaw_cap + 1e-6:
                 return True
-            # Zero yaw is intentionally allowed: if its exact raw sweep is
-            # clear, continuing forward is safer and smoother than forcing a
-            # turn. Only a turn toward the opposite side is suppressed.
-            if committed_side and float(target_w) * committed_side < -1e-6:
-                return True
+            # Only a turn toward the opposite side is suppressed - opposite
+            # to the ROUTE's own turn, not to zero (side_veto_bound). On a
+            # straight the bound is zero, as it always was: zero yaw stays
+            # allowed, because if its exact raw sweep is clear, continuing
+            # forward is safer and smoother than forcing a turn.
+            if committed_side:
+                bound = self.side_veto_bound(target_v, committed_side)
+                if (float(target_w) - bound) * committed_side < -1e-6:
+                    return True
             return raw_veto is not None and raw_veto(target_v, target_w)
 
         return veto

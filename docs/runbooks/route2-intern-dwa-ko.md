@@ -95,6 +95,10 @@ D4 정몽구 -> D5 제2공학관 (D4_to_D5) 로 띄웁니다. [Enter=예, n=취�
   그 뒤 약 9 m에 있는 높이 약 6 cm 과속방지턱 (88.3, -12.3)에서는 1회차가 0.8 m/s로 넘다가 앞이 +35°까지 들렸다.
   그래서 J 진입 (82.6, -22.5)부터 방지턱 지나 (88.1, -9.3)까지 band에 `max_speed_mps: 0.4`를 넣었다.
   감속은 구간 약 2.5 m 앞에서 시작한다. 0.4는 바퀴가 도는 최저 속도 0.35 바로 위다.
+  **2026-11-07 변경**: 0.4로 코너를 돌 때 경사 때문에 휠체어가 밀리는 느낌이 있어 구간을 둘로 나눴다.
+  J 진입 (82.6, -22.5)부터 원호를 지나 (88.3, -16.3)까지는 0.6, 거기서 방지턱 지나 (88.1, -9.3)까지는
+  그대로 0.4다(`tools/band_speed_zone.py`, 같은 네 경로). A에서 올라갈 때는 y≈-18.2에서 0.4로 줄이기 시작해
+  방지턱 약 6 m 앞부터 0.4다. 내려올 때(D4/D5 → A)는 방지턱을 0.4로 넘고 (88.3, -16.3)부터 0.6으로 코너를 돈다.
   방지턱은 감속만으로 막을 수 없으므로, 탑승자가 몸을 앞으로 숙이거나 뒤쪽 전도방지바퀴를 단다.
 - `<키>_smooth`(예: `D4_to_D5_smooth`)는 10-28 선을 스무딩해 D4에서 자른 이전 6개 구간이다
   (`routes/20261031_route2_*`, `tools/build_route2_intern_segments.py`). 이 구간의 D4 정지점은 (105.86, 59.75)로,
@@ -238,6 +242,26 @@ export한 키는 그 프로세스 안에만 있어서, 새 SSH 창에서는 다�
 블랙박스가 세션 전체를 `~/localization_trials/blackbox_*.bag`에 남긴다. 주행 후
 파일 이름, 사용한 배포본(`readlink -f ~/wheelchair_deploys/current`), `LATENCY_MODE` 값,
 멈춘 위치와 `HOLD` 사유를 함께 적어 둔다. bag 다루는 법은 [`../debug_bags.md`](../debug_bags.md).
+
+블랙박스에는 `/dwa_follower/smith_state`도 들어간다. 계획 주기마다 JSON 한 줄이고, 담긴 값은 다음과 같다.
+
+- 플래너 pose 나이 `pose_age_s`
+- 지연 보상이 앞당긴 거리·각도 `lead_m`, `lead_yaw_deg`
+- Smith 모델과 바퀴 실측 `model_*`, `meas_*`
+- 베이스가 들고 있던 명령 `held_*`
+
+주행 로그도 같이 남는다. `go.sh`가 출발 직전에 켜고 `stop.sh`가 바퀴를 세운 뒤 끄며,
+결과는 `~/drive_logs/<시각>/`에 생긴다.
+
+| 파일 | 내용 |
+|---|---|
+| `drive.csv` | 10 Hz 행. Smith 값은 `sm_*` 열 |
+| `smith.jsonl` | smith_state 전체 |
+| `objects.jsonl` | 물체 목록 |
+| `events.log` | 사건 기록 |
+
+직접 다룰 때는 `bash <배포본>/source-linux/tools/drive_log.sh start|stop|status`를 쓴다.
+끄려면 `DRIVE_LOG=0`. 로거가 실패해도 출발과 정지는 막지 않는다.
 
 ## 첫 주행에서 볼 곳
 

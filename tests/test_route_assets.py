@@ -2,6 +2,7 @@ import hashlib
 import importlib.util
 import json
 import math
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -21,6 +22,16 @@ SAFETY_SPEC = importlib.util.spec_from_file_location(
 )
 SAFETY = importlib.util.module_from_spec(SAFETY_SPEC)
 SAFETY_SPEC.loader.exec_module(SAFETY)
+sys.path.insert(0, str(ROOT / "src" / "static_livox_localization" / "scripts"))
+try:
+    import mpc_core  # noqa: F401,E402  (mpc_speed imports it lazily)
+    import mpc_speed as MPC_SPEED  # noqa: E402
+finally:
+    sys.path.pop(0)
+
+
+def _station(band, point):
+    return int(np.argmin(np.linalg.norm(band.xy - np.asarray(point), axis=1)))
 
 
 def test_route2_a_to_d5_is_d5_to_a_driven_backwards_on_the_same_ground():
@@ -156,8 +167,16 @@ def test_route2_manual_j_corner_is_filleted_and_slow_through_the_bump():
         kappa = np.abs(np.diff(heading)) / np.linalg.norm(step[1:], axis=1)
         assert 1.0 / kappa[near].max() > 2.4, key
         band = SAFETY.SafetyBand(manual / ("%s_safety_band.json" % key))
-        for point in (corner, bump):
-            assert band.station_speed_cap(point) == pytest.approx(0.40), key
+        # 2026-11-07: the corner runs at 0.60 (at 0.40 the chair slid down
+        # the cross slope while turning); from 4 m before the bump on it
+        # stays 0.40, and the chair is already at 0.40 when it gets there.
+        assert band.station_speed_cap(corner) == pytest.approx(0.60), key
+        assert band.station_speed_cap(bump) == pytest.approx(0.40), key
+        assert band.station_speed_cap(np.array([88.3, -15.5])) == \
+            pytest.approx(0.40), key
+        uphill = key.startswith("A_")
+        approach = band.xy[_station(band, (88.3, -14.3 if uphill else -10.3))]
+        assert MPC_SPEED.horizon_speed(band, approach) <= 0.40 + 1e-9, key
         assert np.isinf(band.station_speed_cap(band.xy[0]))
 
 

@@ -363,7 +363,7 @@ if [ "$KEEP_LOCALIZATION" = "1" ]; then
   for pattern in '[r]oslaunch base_model' '[r]osbag record' '[a]uto_initial_pose' \
                  '[s]afety_gate' '[t]ip_guard' '[w]aypoint_follower' '[m]pc_follower' \
                  '[d]wa_follower' '[o]bstacle_clusters' '[r]oute_identity_publisher' \
-                 '[w]heel_cmd' '[s]top_watchdog'; do
+                 '[w]heel_cmd' '[s]top_watchdog' '[d]rive_logger'; do
     pkill -f "$pattern" 2>/dev/null || true
   done
   for _ in $(seq 1 10); do
@@ -380,7 +380,7 @@ if [ "$KEEP_LOCALIZATION" = "1" ]; then
   sleep 2
 fi
 if [ "$SHADOW_QA" != "1" ] && [ "$KEEP_LOCALIZATION" != "1" ]; then
-for pattern in '[r]oslaunch' '[r]osbag record' '[f]astlio_mapping' '[a]uto_initial_pose' '[s]afety_gate' '[t]ip_guard' '[w]aypoint_follower' '[m]pc_follower' '[d]wa_follower' '[o]bstacle_clusters' '[r]oute_identity_publisher' '[m]oving_icp_localizer' '[b]ounded_cloud_preview' '[m]ap_preview_publisher' '[l]ivox_ros_driver2' '[v]ectornav' '[w]heel_cmd' '[l]ocalization_state_marker' '[r]eference_marker' '[r]viz'; do
+for pattern in '[r]oslaunch' '[r]osbag record' '[f]astlio_mapping' '[a]uto_initial_pose' '[s]afety_gate' '[t]ip_guard' '[w]aypoint_follower' '[m]pc_follower' '[d]wa_follower' '[o]bstacle_clusters' '[r]oute_identity_publisher' '[m]oving_icp_localizer' '[b]ounded_cloud_preview' '[m]ap_preview_publisher' '[l]ivox_ros_driver2' '[v]ectornav' '[w]heel_cmd' '[l]ocalization_state_marker' '[r]eference_marker' '[r]viz' '[d]rive_logger'; do
   pkill -f "$pattern" 2>/dev/null || true
 done
 # Confirm they are gone rather than assuming a fixed sleep did it. Same
@@ -731,7 +731,7 @@ setsid nohup rosbag record --lz4 \
   /waypoint_follower/status /tip_guard/status /Odometry /livox/imu \
   /perception/objects_summary /perception/dynamic_boxes /perception/objects \
   /waypoint_follower/route_identity /uart_tx_diag /stop_watchdog/alarm /safety_gate/status \
-  /field_mark \
+  /field_mark /dwa_follower/smith_state \
   > "$LOG/live_blackbox.log" 2>&1 < /dev/null &
 
 echo ""

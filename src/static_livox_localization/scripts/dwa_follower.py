@@ -155,6 +155,14 @@ LATENCY_S = 0.55
 LATENCY_MODES = ("lead", "smith", "off")
 LATENCY_MODE = "smith"
 
+# One JSON line per planning cycle with what the lag compensation was given
+# and what it produced, so a bag can say whether the vehicle's late reaction
+# (0.3-0.4 s behind the model on the 11-07 drive) is Smith not leading or the
+# planner pose arriving stale. Read-only; nothing in the stack subscribes to
+# it. An absolute name, because the follower runs under different node names
+# in the bring-ups (waypoint_follower, or the script's own name).
+SMITH_STATE_TOPIC = "/dwa_follower/smith_state"
+
 # How wide a slice of each object the planner is shown, either side of the
 # centreline. Wider than the follower's CORRIDOR_HALF_WIDTH 0.45, which is
 # the width the parked/moving DECISION is taken over: a rollout is free to
@@ -256,12 +264,22 @@ class DwaFollower(WaypointFollower):
                           "low-passed %.2f s" % self.smith.residual_tau_s
                           if self.smith.residual_tau_s > 0.0 else "off")
                       if self.latency_mode == "smith" else "")
+        self.smith_state_pub = rospy.Publisher(
+            SMITH_STATE_TOPIC, String, queue_size=10)
         self.planner = dwa_core.DwaPlanner(
             self.band, self.waypoints,
             distance_m=float(rospy.get_param("~sim_distance_m",
                                               dwa_core.SIM_DISTANCE_M)),
             grace=float(rospy.get_param("~band_grace", 0.0)),
             route_mask=RouteMask(rospy.get_param("~drivable_mask")))
+        self.planner.obstacle_extension = str(rospy.get_param(
+            "~obstacle_extension", dwa_core.OBSTACLE_EXTENSION))
+        if self.planner.obstacle_extension not in \
+                dwa_core.OBSTACLE_EXTENSION_MODES:
+            raise ValueError(
+                "~obstacle_extension must be one of %s, got %r" % (
+                    ", ".join(dwa_core.OBSTACLE_EXTENSION_MODES),
+                    self.planner.obstacle_extension))
         self.anchor = StateAnchor(
             gain=float(rospy.get_param("~anchor_gain", DEFAULT_GAIN)))
         self.last_command_stamp = None
@@ -285,8 +303,12 @@ class DwaFollower(WaypointFollower):
                          self.on_accepted_command, queue_size=1)
         rospy.loginfo(
             "DWA profile: sim %.2f m, %d speeds x %d yaw rates, band and "
-            "drivable mask as hard rejects", self.planner.distance_m,
-            len(dwa_core.speed_samples()), len(dwa_core.yaw_samples()))
+            "drivable mask as hard rejects, obstacle tail %s to %.1f m, "
+            "threat corridor %s",
+            self.planner.distance_m,
+            len(dwa_core.speed_samples()), len(dwa_core.yaw_samples()),
+            self.planner.obstacle_extension, dwa_core.OBSTACLE_PREVIEW_M,
+            self.threat_corridor)
 
     def on_gate_status(self, message):
         """Track how long the gate has been refusing, and why."""
@@ -416,7 +438,11 @@ class DwaFollower(WaypointFollower):
         blocks, points = corridor_obstacle_points(
             self.cluster_summary, OBSTACLE_HALF_WIDTH_M,
             max_distance_m=PLAN_AHEAD_M,
-            exclude_track_ids=self.planner_excluded_track_ids())
+            exclude_track_ids=self.planner_excluded_track_ids(),
+            # This cycle's frame, set by corridor_threat just before: what
+            # stands round the bend, and on the chair's own line, as well as
+            # the straight strip.
+            route_frame=getattr(self, "threat_route_frame", None))
         if not blocks or not points:
             return ()
         heading = np.array([math.cos(state[2]), math.sin(state[2])])
@@ -543,7 +569,9 @@ class DwaFollower(WaypointFollower):
         # upstream of the ICP correction. Unfixed, that lag costs 0.33 m of
         # travel at 0.6 m/s and 0.55 m at 1.0 - the planner correcting for
         # where the chair no longer is, which is what lateral hunting is.
+        anchored = state
         state = self.led_state(state, now.to_sec())
+        self.publish_smith_state(anchored, state, now)
         elapsed = 1.0 / CONTROL_HZ
         if self.last_command_stamp is not None:
             elapsed = (now - self.last_command_stamp).to_sec()
@@ -600,6 +628,73 @@ class DwaFollower(WaypointFollower):
                 self.nearest_index, len(self.waypoints), speed, yaw_rate,
                 target_v, target_w,
                 "" if self.policies else " POLICIES_OFF"), "DWA:OK")
+
+    def smith_state_record(self, anchored, led, now):
+        """What the lag compensation saw and did this cycle, as a dict.
+
+        anchored is the planner state before the lead (StateAnchor output),
+        led the state the planner actually plans from. The model_* fields are
+        the Smith base model with delay brought up to now - compare them with
+        meas_* for the model error, and lead_m/lead_yaw_deg with the turn
+        the chair then makes for whether the lead was long enough.
+        """
+        def num(value, digits=4):
+            value = float(value)
+            return round(value, digits) if math.isfinite(value) else None
+
+        def age(stamp):
+            if stamp is None or (hasattr(stamp, "is_zero")
+                                 and stamp.is_zero()):
+                return None
+            return num((now - stamp).to_sec(), 3)
+
+        now_s = now.to_sec()
+        dyaw = math.atan2(math.sin(led[2] - anchored[2]),
+                          math.cos(led[2] - anchored[2]))
+        record = {
+            "t": round(now_s, 3),
+            "mode": self.latency_mode,
+            "pose_age_s": age(getattr(self, "pose_stamp", None)),
+            "wheel_age_s": age(getattr(self, "wheel_status_stamp", None)),
+            "anchor": [num(v) for v in anchored[:5]],
+            "led": [num(v) for v in led[:3]],
+            "lead_m": num(math.hypot(led[0] - anchored[0],
+                                     led[1] - anchored[1]), 3),
+            "lead_yaw_deg": num(math.degrees(dyaw), 2),
+            "meas_v": num(getattr(self, "measured_speed", float("nan"))),
+            "meas_w": num(getattr(self, "measured_yaw_rate", float("nan"))),
+        }
+        smith = getattr(self, "smith", None)
+        if self.latency_mode == "smith" and smith is not None:
+            held = smith.command_at(now_s)
+            record.update({
+                "horizon_s": num(smith.horizon_s, 3),
+                "model_v": num(smith.speed.output),
+                "model_w": num(smith.yaw.output),
+                "resid_v": num(smith.residual[0]),
+                "resid_w": num(smith.residual[1]),
+                "held_v": num(held[0]),
+                "held_w": num(held[1]),
+                "n_cmds": len(smith.stamps),
+                "last_cmd_age_s": num(now_s - smith.stamps[-1], 3)
+                if smith.stamps else None,
+            })
+        elif self.latency_mode == "lead":
+            record["horizon_s"] = num(self.latency_s, 3)
+        return record
+
+    def publish_smith_state(self, anchored, led, now):
+        """Publish smith_state_record; never lets logging stop the drive."""
+        publisher = getattr(self, "smith_state_pub", None)
+        if publisher is None:
+            return
+        try:
+            publisher.publish(String(data=json.dumps(
+                self.smith_state_record(anchored, led, now),
+                separators=(",", ":"))))
+        except Exception as exc:  # diagnostics only
+            rospy.logwarn_throttle(30.0, "smith_state publish failed: %r",
+                                   exc)
 
     def publish_state(self, text, state=None):
         """Publish every cycle, log only on a change of state.

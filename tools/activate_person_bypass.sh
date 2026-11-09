@@ -185,7 +185,7 @@ setsid nohup rosbag record --lz4 \
   -O "$HOME/localization_trials/person_bypass_$(date +%Y%m%d_%H%M%S)" \
   /person_bypass/permit /waypoint_follower/status \
   /semantic_safety/status /safety_gate/status \
-  /cmd_vel_planned /cmd_vel_raw /cmd_vel_gated \
+  /cmd_vel_planned /cmd_vel_raw /cmd_vel_gated /dwa_follower/smith_state \
   > "$LOG/live_person_bypass_blackbox.log" 2>&1 < /dev/null &
 
 cat <<EOF

@@ -4322,7 +4322,7 @@
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
       "right_rise_m": 0.0,
-      "max_speed_mps": 0.4
+      "max_speed_mps": 0.6
     },
     {
       "x": 88.294,
@@ -4336,7 +4336,7 @@
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
       "right_rise_m": 0.0,
-      "max_speed_mps": 0.4
+      "max_speed_mps": 0.6
     },
     {
       "x": 88.336,
@@ -4350,7 +4350,7 @@
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
       "right_rise_m": 0.0,
-      "max_speed_mps": 0.4
+      "max_speed_mps": 0.6
     },
     {
       "x": 88.368,
@@ -4364,7 +4364,7 @@
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
       "right_rise_m": 0.0,
-      "max_speed_mps": 0.4
+      "max_speed_mps": 0.6
     },
     {
       "x": 88.395,
@@ -4378,7 +4378,7 @@
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
       "right_rise_m": 0.0,
-      "max_speed_mps": 0.4
+      "max_speed_mps": 0.6
     },
     {
       "x": 88.423,
@@ -4392,7 +4392,7 @@
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
       "right_rise_m": 0.0,
-      "max_speed_mps": 0.4
+      "max_speed_mps": 0.6
     },
     {
       "x": 88.448,
@@ -4406,7 +4406,7 @@
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
       "right_rise_m": 0.0,
-      "max_speed_mps": 0.4
+      "max_speed_mps": 0.6
     },
     {
       "x": 88.41,
@@ -4420,7 +4420,7 @@
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
       "right_rise_m": 0.0,
-      "max_speed_mps": 0.4
+      "max_speed_mps": 0.6
     },
     {
       "x": 88.281,
@@ -4434,7 +4434,7 @@
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
       "right_rise_m": 0.0,
-      "max_speed_mps": 0.4
+      "max_speed_mps": 0.6
     },
     {
       "x": 88.063,
@@ -4448,7 +4448,7 @@
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
       "right_rise_m": 0.0,
-      "max_speed_mps": 0.4
+      "max_speed_mps": 0.6
     },
     {
       "x": 87.764,
@@ -4462,7 +4462,7 @@
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
       "right_rise_m": 0.0,
-      "max_speed_mps": 0.4
+      "max_speed_mps": 0.6
     },
     {
       "x": 87.397,
@@ -4476,7 +4476,7 @@
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
       "right_rise_m": 0.0,
-      "max_speed_mps": 0.4
+      "max_speed_mps": 0.6
     },
     {
       "x": 86.975,
@@ -4490,7 +4490,7 @@
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
       "right_rise_m": 0.0,
-      "max_speed_mps": 0.4
+      "max_speed_mps": 0.6
     },
     {
       "x": 86.514,
@@ -4504,7 +4504,7 @@
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
       "right_rise_m": 0.0,
-      "max_speed_mps": 0.4
+      "max_speed_mps": 0.6
     },
     {
       "x": 86.031,
@@ -4518,7 +4518,7 @@
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
       "right_rise_m": 0.0,
-      "max_speed_mps": 0.4
+      "max_speed_mps": 0.6
     },
     {
       "x": 85.544,
@@ -4532,7 +4532,7 @@
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
       "right_rise_m": 0.0,
-      "max_speed_mps": 0.4
+      "max_speed_mps": 0.6
     },
     {
       "x": 85.057,
@@ -4546,7 +4546,7 @@
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
       "right_rise_m": 0.0,
-      "max_speed_mps": 0.4
+      "max_speed_mps": 0.6
     },
     {
       "x": 84.519,
@@ -4560,7 +4560,7 @@
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
       "right_rise_m": 0.0,
-      "max_speed_mps": 0.4
+      "max_speed_mps": 0.6
     },
     {
       "x": 84.02,
@@ -4574,7 +4574,7 @@
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
       "right_rise_m": 0.0,
-      "max_speed_mps": 0.4
+      "max_speed_mps": 0.6
     },
     {
       "x": 83.52,
@@ -4588,7 +4588,7 @@
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
       "right_rise_m": 0.0,
-      "max_speed_mps": 0.4
+      "max_speed_mps": 0.6
     },
     {
       "x": 83.02,
@@ -4602,7 +4602,7 @@
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
       "right_rise_m": 0.0,
-      "max_speed_mps": 0.4
+      "max_speed_mps": 0.6
     },
     {
       "x": 82.521,
@@ -4616,7 +4616,7 @@
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
       "right_rise_m": 0.0,
-      "max_speed_mps": 0.4
+      "max_speed_mps": 0.6
     },
     {
       "x": 82.023,
