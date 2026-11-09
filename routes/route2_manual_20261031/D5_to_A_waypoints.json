@@ -7848,7 +7848,7 @@
     "route_id": "manual_picks20261031-jfillet:D5_to_A:1a509ebfe716",
     "drivable_mask_sha256": "8f846b31cd654d5220ad204da9e9181ceb8d270c5356d58cf44bad8dcf7c72ac",
     "drivable_mask_yaml_sha256": "e2f11034c8cc4a290bb571b6d76b866e7cb5386aa6d391c30ec58ed148892851",
-    "safety_band_sha256": "a5a4cc14aaa3d4b905a387c9fc48bf3d0818c5fb9b1247854ccd6614f1d59ea9",
+    "safety_band_sha256": "c5136ea7b78f46cc5763d4146a13a5bec2e4e56a643c4c154e518738a36a9e6c",
     "route_content_sha256": "04b3302029786f86b9f2744802c5231405ba278e4eb094538f224a9f4dc09c65"
   },
   "corner_fillets": [

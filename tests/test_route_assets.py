@@ -180,6 +180,37 @@ def test_route2_manual_j_corner_is_filleted_and_slow_through_the_bump():
         assert np.isinf(band.station_speed_cap(band.xy[0]))
 
 
+def test_route2_d5_dip_runs_at_0p5_through_the_turn_into_the_climb():
+    # 2026-11-09 D5 -> A: a short dip at map x 167.5-166.8 right before the
+    # climb. At 0.8 m/s the chair rolled up to 0.86 m/s into it, pitched
+    # +4.7 degrees, and at the dip -> climb transition (x 166.5-166.2) the
+    # gate stopped it on the road ahead - the jolt the rider reported. The
+    # zone covers the dip and holds 0.5 for ~2 s (1 m) past the transition,
+    # per direction. The climb's kink at x ~151 runs at 0.6.
+    manual = ROOT / "routes" / "route2_manual_20261031"
+    transition = np.array([166.3, 53.5])
+    kink = np.array([151.0, 57.7])
+    for key, inside, outside in (
+            ("D5_to_A", [168.5, 165.3], [170.5, 163.8]),
+            ("D5_to_D4", [168.5, 165.3], [170.5, 163.8]),
+            ("A_to_D5", [164.5, 167.3], [163.0, 168.5]),
+            ("D4_to_D5", [164.5, 167.3], [163.0, 168.5])):
+        band = SAFETY.SafetyBand(manual / ("%s_safety_band.json" % key))
+        on = lambda x: band.xy[int(np.argmin(np.abs(band.xy[:, 0] - x)))]
+        assert band.station_speed_cap(transition) == pytest.approx(0.50), key
+        for x in inside:
+            assert band.station_speed_cap(on(x)) == pytest.approx(0.50), \
+                (key, x)
+        for x in outside:
+            assert np.isinf(band.station_speed_cap(on(x))), (key, x)
+        assert band.station_speed_cap(kink) == pytest.approx(0.60), key
+        assert np.isinf(band.station_speed_cap(np.array([158.0, 55.6]))), key
+        # 1-1.5 m before the zone the policy already asks for 0.5, so the
+        # chair arrives slowed rather than braking inside the dip
+        before = on(outside[0])
+        assert MPC_SPEED.horizon_speed(band, before) <= 0.50 + 1e-9, key
+
+
 def test_shipped_v6_v8_assets_are_cryptographically_bound():
     binding = ASSETS.validate_asset_binding(
         ROOT / "routes" / "20260812_route_v6_v8_waypoints.json",
