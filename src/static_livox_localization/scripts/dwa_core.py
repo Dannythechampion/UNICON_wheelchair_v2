@@ -156,7 +156,7 @@ W_OBSTACLE = 2.0
 # a 380 m route. Replayed against the recorded poses, this term drops
 # saturation from 9 % to 2 % and from 28 % to 3 %. Anything from 0.5 up works;
 # 2.0 sits in the middle of that plateau.
-W_HEADING = 3.0
+W_HEADING = 5.0
 
 # Reversing the steer is not free. With the quadratic preferred-route cost,
 # 1.61 gives 9 reversals over 381.64 m; 1.62 is the first centesimal value
