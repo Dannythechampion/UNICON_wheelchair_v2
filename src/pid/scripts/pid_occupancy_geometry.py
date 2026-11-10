@@ -56,7 +56,7 @@ class OccupiedCells:
             raise ValueError("invalid clearance radius")
         if self.tree is None:
             raise ValueError("empty occupancy: cannot establish obstruction")
-        distances, _ = self.tree.query(arr, k=1, workers=1)
+        distances, _ = self.tree.query(arr, k=1)  # SciPy <1.6 also supported
         return distances > radius + self.half_diagonal
 
     def has_id(self, object_id):
