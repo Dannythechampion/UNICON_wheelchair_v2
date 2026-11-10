@@ -341,6 +341,10 @@ def main():
     parser.add_argument("--max-range", type=float, default=25.0)
     parser.add_argument("--verify-timeout", type=float, default=20.0)
     parser.add_argument(
+        "--site-routes", default=rospy.get_param("~site_routes", ""),
+        help="comma-separated A,D4,D5 route files defining three known map sites",
+    )
+    parser.add_argument(
         "--global-only",
         action="store_true",
         default=bool(rospy.get_param("~global_only", False)),
@@ -360,8 +364,36 @@ def main():
             parser.error("--{} or private ROS parameter ~{} is required".format(
                 argument.replace("_", "-"), argument
             ))
+    # The three sites are independent of the selected driving route.  They
+    # are only enabled for route2_intern by its environment configuration.
+    # Each site is defined by an existing, validated chair-centred route: the
+    # original parser converts its pose back to the FAST-LIO body frame.
+    site_priors = ()
+    site_paths = [part.strip() for part in args.site_routes.split(",") if part.strip()]
+    if site_paths:
+        if args.global_only or len(site_paths) != 3:
+            rospy.logerr("three-site initialization requires global_only=false "
+                         "and exactly three site routes (A,D4,D5)")
+            return 5
+        try:
+            site_priors = tuple(
+                load_known_start(Path(route_path), "map", args.body_frame_profile)
+                ._replace(source="known_site:" + name)
+                for name, route_path in zip(("A", "D4", "D5"), site_paths)
+            )
+        except KnownStartRouteError as error:
+            rospy.logerr("invalid three-site route: %s", error)
+            return 5
+        if min(
+            np.hypot(one.x - two.x, one.y - two.y)
+            for index, one in enumerate(site_priors)
+            for two in site_priors[index + 1:]
+        ) < 5.0:
+            rospy.logerr("three site priors are not spatially distinct")
+            return 5
+
     route_prior = None
-    if not args.global_only:
+    if not args.global_only and not site_priors:
         try:
             route_prior = load_known_start(
                 Path(args.route), "map", args.body_frame_profile
@@ -379,6 +411,7 @@ def main():
         "odometry_pose": None,
         "pose_sequence": 0,
         "odom_sequence": 0,
+        "last_consensus": None,
     }
 
     def on_diag(message):
@@ -391,6 +424,16 @@ def main():
                 except (KeyError, ValueError):
                     state["reset_count"] = None
                 state["sequence"] += 1
+                if (state["message"] == "TRACKING" and
+                        values.get("reason") == "CONSENSUS_READY"):
+                    try:
+                        state["last_consensus"] = (
+                            state["reset_count"],
+                            float(values["fitness"]),
+                            float(values["inlier_ratio"]),
+                        )
+                    except (ValueError, KeyError, TypeError):
+                        state["last_consensus"] = None
 
     def on_pose(message):
         state["localization_pose"] = planar_pose(message.pose.pose)
@@ -471,6 +514,97 @@ def main():
 
     rospy.loginfo("loading runtime map and mapping trajectory for global fallback")
     map_points = load_pcd_xyz(Path(args.map))
+    if site_priors:
+        # Compare all THREE sites, including 12 heading hypotheses at each
+        # (30 deg steps covering 360 deg).  This is a bounded search over just
+        # the three known map positions, not a replacement for global search.
+        # CPU cKDTree gives the same exact inlier metric as the global CPU
+        # rerank; it avoids requiring another GPU map allocation on the NUC.
+        site_scored = score_global_candidates(
+            sample,
+            map_points,
+            tuple((p.x, p.y, p.z, p.yaw_rad) for p in site_priors),
+            args.inlier_radius,
+            prefer_gpu=False,
+        )
+        coarse_sites = []
+        for prior in site_priors:
+            winner = next((c for c in site_scored
+                           if c.x == prior.x and c.y == prior.y
+                           and c.z == prior.z), None)
+            if winner is not None:
+                coarse_sites.append(winner._replace(source=prior.source))
+        # Full yaw plus local position refinement compensates for a chair
+        # parked slightly away from the recorded route start.  Each site
+        # remains a distinct hypothesis for the ambiguity check.
+        refined_sites = refine_candidates(
+            sample, map_points, coarse_sites, args.inlier_radius,
+            position_radius_m=0.75, max_rounds=2,
+        )
+        for candidate in refined_sites:
+            rospy.loginfo(
+                "known-site candidate %s: score=%.3f (%.2f, %.2f) yaw=%.1f",
+                candidate.source, candidate.score, candidate.x, candidate.y,
+                np.degrees(candidate.yaw_rad),
+            )
+        # Never infer a correct global position from one local GICP score.
+        # Refuse an ambiguous multi-site scan before seeding any candidate.
+        site_decision = decide_fix(refined_sites, min_refined_score=0.0)
+        if site_decision.reason == "accepted" and not args.dry_run:
+            verified_sites = []
+            for site_rank, candidate in enumerate(refined_sites, start=1):
+                # Coarse/refined support keeps obviously wrong distant sites
+                # out of the expensive GICP verifier.
+                min_site_score = (
+                    0.55 if candidate.source == "known_site:D5" else 0.65
+                )
+                if candidate.score is None or candidate.score < min_site_score:
+                    rospy.loginfo("skip %s: score %s below %.2f",
+                                  candidate.source, candidate.score, min_site_score)
+                    continue
+                # A successful attempt is still not enough to choose a site:
+                # record the actual local registration metrics, then reset
+                # before testing another distinct hypothesis.
+                if try_candidate(candidate, site_rank, state, seed_pub,
+                                 enable, args.verify_timeout):
+                    result = state.get("last_consensus")
+                    if (result is not None and
+                            result[0] == state["reset_count"] and
+                            np.isfinite(result[1]) and
+                            np.isfinite(result[2])):
+                        rospy.loginfo("verified %s: fitness=%.4f inlier=%.3f",
+                                      candidate.source, result[1], result[2])
+                        verified_sites.append((candidate, result[1], result[2]))
+                    else:
+                        rospy.logwarn("%s reached TRACKING without fresh GICP "
+                                      "consensus metrics; not trusted",
+                                      candidate.source)
+                    disable_correction(enable, site_rank)
+            if len(verified_sites) == 1:
+                winner = verified_sites[0][0]
+                # A separate final seed avoids publishing a pose left behind
+                # by a subsequent, unsuccessful competing hypothesis.
+                if try_candidate(winner, 4, state, seed_pub, enable,
+                                 args.verify_timeout):
+                    if wait_for_stationary_stability(
+                        state, state["reset_count"], args.stability_window_s
+                    ):
+                        publish_initialization_receipt(winner.source)
+                        return 0
+                    disable_correction(enable, 4)
+                    return 8
+                rospy.logwarn("final known-site verification failed; global fallback")
+            elif len(verified_sites) > 1:
+                rospy.logerr("more than one distinct site passed GICP; "
+                             "refusing to guess, using global fallback")
+            else:
+                rospy.logwarn("no known site passed GICP; global fallback")
+        else:
+            rospy.logwarn("three-site score ambiguous/empty (%s); global fallback",
+                          site_decision.reason)
+        # Unchanged global search, including its own strong-support and
+        # ambiguity gates, runs below when no site was verified.
+
     candidates = load_trajectory_candidates(Path(args.traj), args.spacing)
     rospy.loginfo("%d trajectory candidates", len(candidates))
 

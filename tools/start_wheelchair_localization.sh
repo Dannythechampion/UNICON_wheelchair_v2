@@ -88,6 +88,11 @@ AUTO_INIT_ROUTE="${AUTO_INIT_ROUTE:-$ROUTE}"
 # since ICP consensus still has to accept it and rejects a wrong prior.
 #   AUTO_INIT_GLOBAL_ONLY=false ./start_wheelchair_localization.sh
 AUTO_INIT_GLOBAL_ONLY="${AUTO_INIT_GLOBAL_ONLY:-true}"
+AUTO_INIT_SITE_ROUTES="${AUTO_INIT_SITE_ROUTES:-}"
+if [ -n "$AUTO_INIT_SITE_ROUTES" ] && [ "$MAP_ID" != "route2_intern_20261026" ]; then
+  echo "ERROR: three-site initialization requires route2_intern map" >&2
+  exit 67
+fi
 case "$AUTO_INIT_GLOBAL_ONLY" in
   true|false) ;;
   *) echo "ERROR: AUTO_INIT_GLOBAL_ONLY must be true or false, got '$AUTO_INIT_GLOBAL_ONLY'" >&2
@@ -527,6 +532,7 @@ rosparam set /fast_lio_icp/auto_initialization_stable false
 rosparam set /fast_lio_icp/auto_initialization_source none
 $DETACH roslaunch static_livox_localization moving_localization.launch \
   rviz:="$RVIZ" auto_init:=true auto_init_global_only:="$AUTO_INIT_GLOBAL_ONLY" \
+  auto_init_site_routes:="$AUTO_INIT_SITE_ROUTES" \
   map_path:="$MAP" map_sha256:="$MAP_SHA256" map_id:="$MAP_ID" \
   auto_init_map:="$MAP" auto_init_traj:="$TRAJ" \
   auto_init_route:="$AUTO_INIT_ROUTE" \
@@ -567,11 +573,16 @@ while [ "$(date +%s)" -lt "$AUTO_INIT_DEADLINE" ]; do
       echo none
   )
   AUTO_INITIALIZATION_SOURCE_ALLOWED=false
-  if [ "$AUTO_INITIALIZATION_SOURCE" = "global_search" ] ||
-     { [ "$AUTO_INIT_GLOBAL_ONLY" = "false" ] &&
-       [ "$AUTO_INITIALIZATION_SOURCE" = "known_start_route" ]; }; then
-    AUTO_INITIALIZATION_SOURCE_ALLOWED=true
-  fi
+  case "$AUTO_INITIALIZATION_SOURCE" in
+    global_search)
+      AUTO_INITIALIZATION_SOURCE_ALLOWED=true ;;
+    known_start_route)
+      [ "$AUTO_INIT_GLOBAL_ONLY" = "false" ] && AUTO_INITIALIZATION_SOURCE_ALLOWED=true ;;
+    known_site:A|known_site:D4|known_site:D5)
+      if [ "$AUTO_INIT_GLOBAL_ONLY" = "false" ] && [ -n "$AUTO_INIT_SITE_ROUTES" ]; then
+        AUTO_INITIALIZATION_SOURCE_ALLOWED=true
+      fi ;;
+  esac
   echo "  state: $STATE"
   if echo "$STATE" | grep -q TRACKING &&
      [ "$AUTO_INITIALIZATION_VERIFIED" = "true" ] &&

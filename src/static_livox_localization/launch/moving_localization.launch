@@ -4,6 +4,7 @@
   <arg name="rviz" default="false"/>
   <arg name="auto_init" default="false"/>
   <arg name="auto_init_global_only" default="false"/>
+  <arg name="auto_init_site_routes" default=""/>
   <arg name="registration_backend" default="pcl_gicp"/>
   <arg name="map_path" default="/home/mprp3/wheelchair_localization_maps/merged_0707_0725_v1/merged_0707_0725_0p20m_xyzi.pcd"/>
   <arg name="map_sha256" default="ee317581328d3eaeee86ba448b0068c1016ca1452664b6cdaba2d874320d0431"/>
@@ -81,6 +82,7 @@
     <param name="body_frame_profile" value="$(arg auto_init_body_frame_profile)"/>
     <param name="min_refined_score" value="$(arg auto_init_min_refined_score)"/>
     <param name="global_only" value="$(arg auto_init_global_only)"/>
+    <param name="site_routes" value="$(arg auto_init_site_routes)"/>
     <param name="require_gpu" value="$(arg auto_init_require_gpu)"/>
     <param name="gpu_lateral_radius_m" value="$(arg auto_init_gpu_lateral_radius_m)"/>
     <param name="gpu_lateral_step_m" value="$(arg auto_init_gpu_lateral_step_m)"/>

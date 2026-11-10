@@ -64,6 +64,13 @@ route2_intern_env() {
   export TRAJ_SHA256="0a4b35d9039343293afd74e2522b5b8dd5ac36ab124d34dfe9aa62d41e508ef5"
   export ROUTE="$repo/routes/${stem}_waypoints.json"
   export AUTO_INIT_ROUTE="$ROUTE"
+  # Three physically distinct restart sites, loaded through the same
+  # chair-centre-to-body conversion as the legacy known-start route.
+  # GICP verifies the best non-ambiguous site; all failures fall back
+  # to the existing full-map global localization.
+  export AUTO_INIT_SITE_ROUTES="$repo/routes/route2_manual_20261031/A_to_D4_waypoints.json,$repo/routes/route2_manual_20261031/D4_to_D5_waypoints.json,$repo/routes/route2_manual_20261031/D5_to_D4_waypoints.json"
+  export AUTO_INIT_GLOBAL_ONLY=false
+  export AUTO_INIT_TIMEOUT_S=240
   export BAND="$repo/routes/${stem}_safety_band.json"
   export DRIVABLE_MASK="$repo/routes/$mask"
   export ROUTE2_KEY="$key"
