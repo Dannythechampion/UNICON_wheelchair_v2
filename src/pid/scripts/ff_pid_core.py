@@ -16,7 +16,7 @@ import numpy as np
 # Node는 여기서 설정한 값을 사용하고, 주행 명령 계산은 FFPD가 수행합니다.
 # 아래 값은 초기 실험용이며 실차에서 검증·튜닝된 최종값이 아닙니다.
 KP = 1.00                        # P 게인: 예상 CTE에 비례한 조향 보정
-KD = 0.5                        # D 게인: 예상 CTE 변화율에 따른 조향 보정
+KD = 1.0                        # D 게인: 예상 CTE 변화율에 따른 조향 보정
 KI = 0.00                        # I 게인: 사용하지 않음
 FF_GAIN = 1.00                   # 경로 곡률 FF 보정 배율
 FF_PREVIEW_WAYPOINTS = 5         # 예측 위치의 최근접 Waypoint에서 앞쪽으로 볼 칸 수
@@ -31,7 +31,7 @@ MAX_WHEEL_MPS = 1.00             # 좌·우 각각의 바퀴 최대 구동 속�
 # 곡률·CTE 속도 상한과 SLOW 속도 계획은 Safety에서 수행합니다.
 CTE_DEADZONE_M = 0.05           # 작은 횡방향 오차를 무시하는 구간 [m]
 D_DEADZONE_MPS = 0.02            # D항 입력(CTE 변화율) 데드존 [m/s]
-D_CLAMP_CURVATURE_INV_M = 0.15     # D항 곡률 제한 [1/m]; 최종 각속도 기여는 v를 곱함
+D_CLAMP_CURVATURE_INV_M = 0.30     # D항 곡률 제한 [1/m]; 최종 각속도 기여는 v를 곱함
 LINEAR_ACCEL_LIMIT_MPS2 = 0.80   # RUNNING 선가속도 제한 [m/s²]; 일반 감속은 제한 없음
 ANGULAR_ACCEL_LIMIT_RAD_S2 = 2.00  # RUNNING 각속도 변화율 제한 [rad/s²]
 COMMAND_LIMIT_MAX_DT_S = 0.05    # 제어 루프 지연 시 한 번의 큰 명령 점프 방지

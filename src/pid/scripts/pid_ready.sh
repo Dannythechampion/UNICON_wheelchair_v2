@@ -62,6 +62,13 @@ run_monitor() {
   python3 -u "$MONITOR" "--$1"
 }
 
+# Prevent READY startup while the isolated LiDAR connection test owns ROS.
+# A stale 'active' marker also blocks startup until the test is cleaned up.
+LIDAR_TEST_STATE_DIR="${PID_LIDAR_TEST_STATE_DIR:-$HOME/.local/state/pid_lidar_test}"
+if [[ "$MODE" = start && -e "$LIDAR_TEST_STATE_DIR/active" ]]; then
+  fail "LiDAR connection test is active or cleanup incomplete. Stop it before READY."
+fi
+
 if [ "$MODE" = stop ]; then
   require_file "$SHUTDOWN_HELPER"
   exec bash "$SHUTDOWN_HELPER"
