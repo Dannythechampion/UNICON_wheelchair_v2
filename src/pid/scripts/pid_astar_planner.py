@@ -12,6 +12,8 @@ import threading
 import rospy
 import rospkg
 from std_msgs.msg import String
+from std_srvs.srv import Trigger
+from pid_occupancy_snapshot import SNAPSHOT_SERVICE
 
 from ff_pid_core import Route
 
@@ -65,9 +67,22 @@ class ReplanWorker:
                 self.folder, request["route"] + "_waypoints.json"))
             if self.mask is None:
                 self.mask = RouteMask(os.path.join(self.folder, "common_drivable_mask.yaml"))
+            # Snapshot acquisition runs in this non-driving worker thread.
+            # Never block the Safety 10 Hz timer with a ROS service call.
+            rospy.wait_for_service(SNAPSHOT_SERVICE, timeout=2.0)
+            response = rospy.ServiceProxy(SNAPSHOT_SERVICE, Trigger)()
+            if not response.success:
+                raise ValueError("occupancy unavailable: " + response.message[:120])
+            occupancy = json.loads(response.message)
+            source_age = rospy.Time.now().to_sec() - float(occupancy["stamp"])
+            if source_age < -0.2 or source_age > 0.8:
+                raise ValueError("occupancy source stale")
+            blocking_id = int(request["blocker_id"])
             metadata = replan(original, self.mask, request["pose"],
-                              float(request["station"]), request["objects"])
-            result.update(status="OK", error=None, metadata=metadata)
+                              float(request["station"]), request["objects"],
+                              occupancy=occupancy, blocking_id=blocking_id)
+            result.update(status="OK", error=None, metadata=metadata,
+                          occupancy=occupancy)
         except Exception as exc:
             result["error"] = str(exc)[:160]
             rospy.logwarn("A* plan failed %s: %s", request["plan_id"], exc)

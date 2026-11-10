@@ -79,6 +79,12 @@ case "$MODE" in
       /cmd_vel \
       /ff_pid/status \
       /ff_pid/motion_policy \
+      /ff_pid/replan/request \
+      /ff_pid/replan/candidate \
+      /ff_pid/replan/stage \
+      /ff_pid/replan/commit \
+      /ff_pid/replan/ack \
+      /ff_pid/active_route \
       /pid_safety/status \
       /perception/objects_summary \
       /uart_tx_diag \

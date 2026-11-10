@@ -10,6 +10,7 @@ import math
 
 import numpy as np
 from scipy.interpolate import splprep, splev
+from pid_occupancy_geometry import OccupiedCells
 
 # Initial conservative planning values, NOT validated wheelchair dimensions.
 MASK_RESERVE_M = 0.30
@@ -55,6 +56,8 @@ def footprint_free(xy, pose, boxes, radius):
     c, s = math.cos(theta), math.sin(theta)
     dx, dy = points[:, 0] - x, points[:, 1] - y
     local_x, local_y = c * dx + s * dy, -s * dx + c * dy
+    if isinstance(boxes, OccupiedCells):
+        return boxes.free(points, radius)
     clear = np.ones(len(points), dtype=bool)
     for bx, by, bw, bh in boxes:
         gx = np.maximum(np.abs(local_x - bx) - bw / 2., 0.)
@@ -210,13 +213,19 @@ def smooth(points, s_value):
     return resample(dense, .1)
 
 
-def replan(original_route, mask, pose, station, objects):
+def replan(original_route, mask, pose, station, objects, occupancy=None,
+           blocking_id=None):
     """Return a full in-memory Route metadata dict (original route preserved)."""
     if len(pose) != 3 or not all(math.isfinite(float(p)) for p in pose):
         raise ValueError("invalid chair-centre pose")
     if not math.isfinite(float(station)):
         raise ValueError("invalid route progress")
-    boxes = static_boxes(objects)
+    if occupancy is not None:
+        boxes = OccupiedCells(occupancy)
+        if blocking_id is None or not boxes.has_id(blocking_id):
+            raise ValueError("confirmed blocker absent from occupancy snapshot")
+    else:
+        boxes = static_boxes(objects)  # legacy offline compatibility only
     start = np.asarray(pose[:2], dtype=float)
     # Try tighter paths first; increased obstacle inflation changes the search.
     for radius in OBSTACLE_RADIUS_M:

@@ -47,6 +47,12 @@ import sensor_msgs.point_cloud2 as pc2
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from body_frame import (CHAIR_CENTRE_IN_BODY_XYZ, body_to_lidar,
                         lidar_extrinsics, lidar_to_body)
+# PID occupied cells use a separate service; legacy summary unchanged.
+import sys as _pid_occ_sys
+from pathlib import Path as _pid_occ_Path
+_pid_occ_sys.path.insert(0, str(_pid_occ_Path(__file__).resolve().parents[2] / "pid" / "scripts"))
+from pid_occupancy_snapshot import SnapshotService
+# PID_OCCUPANCY_HOOK_V1
 from cloud_points import (COLLISION_MAX_HEIGHT_M,
                           COLLISION_MIN_HEIGHT_M, points_xyzi)
 from cluster_tracking import MOVING, STATIC, UNKNOWN, Tracker
@@ -435,6 +441,7 @@ class ObstacleClusters:
             raise rospy.ROSInitException(
                 "~object_band_grace must be a finite non-negative distance")
         self.map_poses = MapPoseBuffer()
+        self.pid_occupancy_snapshot = SnapshotService()
         self._last_processed_stamp = None
         self._last_bloom_removed = 0
         self.marker_pub = rospy.Publisher(
@@ -490,6 +497,7 @@ class ObstacleClusters:
              for i, point in enumerate(in_odom)], stamp_s)
 
     def publish_empty(self, source_stamp, status):
+        self.pid_occupancy_snapshot.clear()
         delete_all = Marker()
         delete_all.action = Marker.DELETEALL
         clear = MarkerArray()
@@ -579,6 +587,13 @@ class ObstacleClusters:
             band_context.append((raw_label, relation, inside_fraction,
                                  lateral_profile(cluster)))
         tracks = self.track(boxes)
+        # Capture only the latest filtered, already-clustered scan. Map
+        # conversion uses the SAME synchronized map pose as geometric output.
+        # The grid is constructed only when a stopped A* worker requests it.
+        self.pid_occupancy_snapshot.update(
+            newest_stamp, map_pose @ body_T_lidar,
+            [(i if not tracks else int(tracks[i].id), cluster)
+             for i, cluster in enumerate(clusters)])
 
         markers, objects = MarkerArray(), []
         dynamic = MarkerArray()

@@ -141,6 +141,12 @@ if [[ "${PID_ENABLE_ASTAR:-true}" == "true" && "$TEST_CLEAR" != "true" ]]; then
   printf '[WARN] Experimental autonomous A* detour enabled. Unvalidated on real wheelchair.\n' >&2
 fi
 if [[ "$REPLAN_ENABLED" == "true" ]]; then
+# The optional occupancy service is published by the patched existing
+# geometric LiDAR node. Never arm experimental A* without this provider.
+timeout 3 rosservice info /perception/pid_occupancy_snapshot >/dev/null 2>&1 || {
+  bash "$STOP" >/dev/null 2>&1 || true
+  fail "A* 점유 셀 서비스가 없습니다. 팀 인식 노드 연동 패치를 먼저 적용하세요."
+}
 ASTAR_LOG="$RUN_DIR/pid_astar_${ROUTE}_$(date +%Y%m%d_%H%M%S).log"
 setsid nohup env OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
   python3 -u "$ASTAR" > "$ASTAR_LOG" 2>&1 < /dev/null &
