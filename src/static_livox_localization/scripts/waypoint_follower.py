@@ -319,6 +319,8 @@ class WaypointFollower:
         # measurement on the bus, and until 2026-08-23 nothing decoded it.
         self.measured_speed = 0.0
         self.measured_yaw_rate = 0.0
+        self.measured_left = 0.0
+        self.measured_right = 0.0
         self.route_locked = False
         profile = str(rospy.get_param("~body_frame_profile"))
         lidar_in_body, lidar_to_body_rotation = lidar_extrinsics(profile)
@@ -574,6 +576,10 @@ class WaypointFollower:
             self.drive_mode = data[1]
         if len(data) >= 6:
             left, right = self.reported_wheel_speeds(data)
+            # Kept per wheel as well: a launch on a climb frees one wheel
+            # before the other, and the mean cannot say which.
+            self.measured_left = left
+            self.measured_right = right
             self.measured_speed = (left + right) / 2.0
             self.measured_yaw_rate = (right - left) / WHEEL_SEPARATION_M
 

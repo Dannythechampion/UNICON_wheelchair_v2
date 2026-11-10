@@ -33,6 +33,11 @@ from tip_guard_policy import next_linear_speed
 GUARD_HZ = 50.0
 INPUT_STALE_S = 0.6
 ACCEL_LIMIT = 0.30
+# Where the loaded wheels start turning (dwa_core.TURN_FLOOR_SPEED, kept as
+# a literal for the same reason safety_gate keeps its own copy). A launch
+# from rest goes straight here instead of crawling up through the deadband;
+# ~launch_floor_mps 0.0 restores the plain ramp.
+LAUNCH_FLOOR_MPS = 0.35
 
 
 class TipGuard:
@@ -43,6 +48,10 @@ class TipGuard:
         self.raw_stamp = rospy.Time(0)
         self.current_speed = 0.0
         self.status = ""
+        self.launch_floor_mps = float(rospy.get_param(
+            "~launch_floor_mps", LAUNCH_FLOOR_MPS))
+        rospy.loginfo("tip_guard: accel %.2f m/s^2, launch floor %.2f m/s",
+                      ACCEL_LIMIT, self.launch_floor_mps)
 
         self.pub = rospy.Publisher("/cmd_vel", Twist, queue_size=1)
         self.status_pub = rospy.Publisher(
@@ -71,7 +80,8 @@ class TipGuard:
                 self.raw.linear.x,
                 ACCEL_LIMIT,
                 dt,
-                stale)
+                launch_floor=self.launch_floor_mps,
+                stop_required=stale)
 
             out = Twist()
             out.linear.x = self.current_speed

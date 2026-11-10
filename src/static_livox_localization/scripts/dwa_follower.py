@@ -90,6 +90,7 @@ from cluster_guard import (GO_ROUND, PERSON_BYPASS,
 from mpc_anchor import DEFAULT_GAIN, StateAnchor
 from mpc_command import MAX_COMMAND_GAP_S, advance_command, jerk_limited
 from route_mask import RouteMask
+from straight_launch import LAUNCH_SPEED_MPS, StraightLaunch, launch_speed
 from waypoint_follower import (WaypointFollower, CONTROL_HZ, CREEP_SPEED,
                                GUARD_SLOW_EXTRA_M, MAX_ACCEL, MAX_DECEL,
                                MAX_SPEED, MAX_YAW_RATE, PLAN_AHEAD_M)
@@ -288,6 +289,16 @@ class DwaFollower(WaypointFollower):
         self.dwa_status = ""
         # Carried across cycles so the ramp has a slope to be limited against.
         self.command_accel = 0.0
+        # Launch from rest (straight_launch): ~launch_floor_mps 0.0 restores
+        # the plain ramp, ~straight_launch false lets the planner steer from
+        # the first cycle as before.
+        self.launch_floor_mps = float(rospy.get_param(
+            "~launch_floor_mps", LAUNCH_SPEED_MPS))
+        self.launch = StraightLaunch(enabled=bool(rospy.get_param(
+            "~straight_launch", True)))
+        rospy.loginfo("DWA launch: floor %.2f m/s, straight launch %s",
+                      self.launch_floor_mps,
+                      "on" if self.launch.enabled else "off")
         self.gate_reason = ""
         self.gate_blocked_since = None
         self.gate_detail = ""
@@ -372,7 +383,8 @@ class DwaFollower(WaypointFollower):
             return None
         return min(measured, dwa_core.MAX_SPEED)
 
-    def command_for_target(self, target_v, target_w, elapsed):
+    def command_for_target(self, target_v, target_w, elapsed,
+                           hold_yaw=False):
         """The raw command the ramp will publish for one planner target.
 
         Candidate safety has to judge this command rather than the solver's
@@ -380,6 +392,9 @@ class DwaFollower(WaypointFollower):
         those two very different; validating the target and publishing the
         ramped command would recreate the planner/gate disagreement one step
         later.
+
+        From rest the speed goes straight to the launch floor, and with
+        hold_yaw a moving target is commanded straight (straight_launch).
         """
         step = max(float(elapsed), 1e-3)
         wanted_accel = np.clip(
@@ -394,7 +409,25 @@ class DwaFollower(WaypointFollower):
         speed, yaw_rate = advance_command(
             self.current_speed, self.last_yaw_rate, accel, elapsed,
             dwa_core.MAX_SPEED, MAX_YAW_RATE)
+        floor = launch_speed(self.current_speed, target_v,
+                             getattr(self, "launch_floor_mps", 0.0))
+        if floor is not None and speed < floor:
+            # Through the deadband in one step; the ramp (and its jerk
+            # limit) resumes from the floor, not from a carried slope.
+            speed, command_accel = floor, 0.0
+        if hold_yaw and float(target_v) >= dwa_core.TURN_FLOOR_SPEED:
+            yaw_rate = 0.0
         return float(speed), float(yaw_rate), float(command_accel)
+
+    def launch_inputs(self, now):
+        """(left, right, fresh) from the base's own wheel report."""
+        stamp = getattr(self, "wheel_status_stamp", None)
+        fresh = False
+        if stamp is not None:
+            age = (now - stamp).to_sec()
+            fresh = 0.0 <= age <= WHEEL_SPEED_FRESH_S
+        return (float(getattr(self, "measured_left", 0.0)),
+                float(getattr(self, "measured_right", 0.0)), fresh)
 
     def planner_candidate_veto(self, _now, _decision, _command_for_target):
         """Optional downstream-geometry veto, supplied by guarded profiles."""
@@ -408,6 +441,10 @@ class DwaFollower(WaypointFollower):
         # The jerk limit shapes driving, never braking. Dropping the carried
         # acceleration here is what keeps a stop as abrupt as it was before.
         self.command_accel = 0.0
+        # A hold ends any launch; the next one starts from rest afresh.
+        launch = getattr(self, "launch", None)
+        if launch is not None:
+            launch.reset("hold")
         WaypointFollower.send_stop(self)
 
     def on_odom(self, message):
@@ -581,19 +618,47 @@ class DwaFollower(WaypointFollower):
                 elapsed)
             self.current_speed = float(state[3])
             self.last_yaw_rate = float(state[4])
-        command_for_target = lambda v, w: self.command_for_target(
-            v, w, elapsed)
-        candidate_veto = self.planner_candidate_veto(
-            now, decision, command_for_target)
-        target_v, target_w, status = self.planner.plan(
-            state, obstacles, speed_cap=cap,
-            last_yaw_rate=self.last_yaw_rate,
-            last_speed=self.current_speed,
-            obstacle_floor_m=(
-                PERSON_BYPASS_CLEARANCE_M
-                if decision == PERSON_BYPASS
-                else dwa_core.OBSTACLE_FLOOR_M),
-            candidate_veto=candidate_veto)
+        # Straight launch: decided before planning, so candidate safety
+        # judges the straight command that will actually be sent. Never
+        # while going round something - there the first metre is the turn.
+        launch = getattr(self, "launch", None)
+        left, right, wheels_fresh = self.launch_inputs(now)
+        launch_allowed = decision not in (GO_ROUND, PERSON_BYPASS)
+        hold_yaw = launch is not None and launch.eligible(
+            self.current_speed, left, right, wheels_fresh, launch_allowed)
+
+        def plan_with(hold):
+            command_for_target = lambda v, w: self.command_for_target(
+                v, w, elapsed, hold_yaw=hold)
+            candidate_veto = self.planner_candidate_veto(
+                now, decision, command_for_target)
+            return command_for_target, self.planner.plan(
+                state, obstacles, speed_cap=cap,
+                last_yaw_rate=self.last_yaw_rate,
+                last_speed=self.current_speed,
+                obstacle_floor_m=(
+                    PERSON_BYPASS_CLEARANCE_M
+                    if decision == PERSON_BYPASS
+                    else dwa_core.OBSTACLE_FLOOR_M),
+                candidate_veto=candidate_veto)
+
+        command_for_target, (target_v, target_w, status) = plan_with(hold_yaw)
+        if hold_yaw and status != "OK":
+            # Straight was refused downstream; a straight launch is not worth
+            # a stop. Plan again as before this existed.
+            launch.reset("no straight candidate")
+            hold_yaw = False
+            command_for_target, (target_v, target_w, status) = \
+                plan_with(False)
+        if hold_yaw:
+            hold_yaw = launch.update(
+                now.to_sec(), self.current_speed, target_v, left, right,
+                wheels_fresh, launch_allowed)
+            if not hold_yaw:
+                command_for_target = lambda v, w: self.command_for_target(
+                    v, w, elapsed)
+        elif launch is not None:
+            launch.reset("not eligible")
         if status != "OK":
             if status != self.dwa_status:
                 if status == "SPEED_BELOW_FLOOR":
@@ -624,9 +689,10 @@ class DwaFollower(WaypointFollower):
         self.current_speed = speed
         self.last_yaw_rate = yaw_rate
         self.publish_state(
-            "DWA wp=%d/%d v=%.2f w=%+.2f target %.2f/%+.2f%s" % (
+            "DWA wp=%d/%d v=%.2f w=%+.2f target %.2f/%+.2f%s%s" % (
                 self.nearest_index, len(self.waypoints), speed, yaw_rate,
                 target_v, target_w,
+                " LAUNCH" if hold_yaw else "",
                 "" if self.policies else " POLICIES_OFF"), "DWA:OK")
 
     def smith_state_record(self, anchored, led, now):

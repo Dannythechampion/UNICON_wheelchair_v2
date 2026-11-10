@@ -1626,3 +1626,81 @@ def test_smith_state_is_published_once_per_plan_as_json():
     lead = follower.smith_state_record(anchored, anchored, Stamp(10.0))
     assert lead["horizon_s"] == pytest.approx(0.55)
     assert "model_v" not in lead
+
+
+# ------------------------------------------------ launch from rest (11-09)
+
+class SteeringPlanner(object):
+    """Plans a moving, turning target; can refuse the first attempt."""
+
+    def __init__(self, refuse_first=False):
+        self.calls = 0
+        self.refuse_first = refuse_first
+
+    def plan(self, state, obstacles=(), speed_cap=None,
+             last_yaw_rate=0.0, last_speed=None,
+             obstacle_floor_m=None, candidate_veto=None):
+        self.calls += 1
+        if self.refuse_first and self.calls == 1:
+            return 0.0, 0.0, "NO_CANDIDATE"
+        return 0.6, 0.3, "OK"
+
+
+def launching(monkeypatch, left=0.0, right=0.0, refuse_first=False):
+    module, follower, published, commanded = dwa_with([], monkeypatch)
+    _m, Stamp = load_follower("dwa_follower")
+    sl = module.StraightLaunch
+    follower.planner = SteeringPlanner(refuse_first)
+    follower.launch = sl()
+    follower.launch_floor_mps = 0.35
+    follower.measured_left = left
+    follower.measured_right = right
+    follower.wheel_status_stamp = Stamp(100.0)
+    return follower, published, commanded
+
+
+def test_a_launch_from_rest_goes_out_at_the_floor_and_straight(monkeypatch):
+    """18:52:33: the ramp crawled 0.02 -> 0.34 m/s with +0.15..+0.20 rad/s
+    on it while one wheel came free first. Now: 0.35 m/s, no yaw."""
+    follower, published, commanded = launching(monkeypatch)
+
+    follower.step()
+
+    command = commanded[-1]
+    assert command.linear.x == pytest.approx(0.35)
+    assert command.angular.z == 0.0
+    assert published[-1].endswith(" LAUNCH")
+
+
+def test_steering_returns_once_both_wheels_turn(monkeypatch):
+    follower, published, commanded = launching(monkeypatch)
+    follower.step()
+    follower.measured_left = follower.measured_right = 0.3
+    follower.current_speed = 0.35
+
+    follower.step()
+
+    assert commanded[-1].angular.z > 0.0
+    assert not published[-1].endswith(" LAUNCH")
+
+
+def test_a_refused_straight_launch_falls_back_to_steering(monkeypatch):
+    """A straight launch is never worth a stop."""
+    follower, published, commanded = launching(monkeypatch,
+                                               refuse_first=True)
+
+    follower.step()
+
+    assert follower.planner.calls == 2
+    assert commanded[-1].linear.x == pytest.approx(0.35)
+    assert commanded[-1].angular.z > 0.0
+
+
+def test_rolling_wheels_are_not_a_launch(monkeypatch):
+    follower, published, commanded = launching(monkeypatch, 0.4, 0.4)
+    follower.current_speed = 0.4
+
+    follower.step()
+
+    assert commanded[-1].angular.z > 0.0
+    assert not published[-1].endswith(" LAUNCH")
