@@ -263,6 +263,15 @@ for pair in "DWA_CURV_MAX=$DWA_CURV_MAX" "DWA_YAW_ACCEL=$DWA_YAW_ACCEL"; do
 done
 echo "  launch: floor $LAUNCH_FLOOR_MPS m/s, straight $STRAIGHT_LAUNCH; base turn boost $BASE_TURN_BOOST"
 echo "  steering: curvature max $DWA_CURV_MAX 1/m, yaw accel $DWA_YAW_ACCEL rad/s^2 (0 = off)"
+# Smith model error, low speed only (dwa_follower SMITH_RESIDUAL_MODES):
+# imu (default) | wheel | off.
+SMITH_RESIDUAL="${SMITH_RESIDUAL:-imu}"
+case "$SMITH_RESIDUAL" in
+  imu|wheel|off) ;;
+  *) echo "ERROR: SMITH_RESIDUAL must be imu, wheel or off, got '$SMITH_RESIDUAL'" >&2
+     exit 65 ;;
+esac
+echo "  smith model error: $SMITH_RESIDUAL (applied under 0.3 m/s, none over 0.5)"
 # OpenBLAS sizes its thread pool to the core count and then SPIN-WAITS
 # those threads between calls. Every numpy operation in the control-loop
 # nodes is tiny - a 25-step horizon, a few hundred band stations - so the
@@ -755,6 +764,7 @@ setsid nohup env $SINGLE_THREAD_ENV \
   _straight_launch:="$STRAIGHT_LAUNCH" \
   _curvature_max:="$DWA_CURV_MAX" \
   _yaw_accel:="$DWA_YAW_ACCEL" \
+  _smith_residual:="$SMITH_RESIDUAL" \
   > "$LOG/live_follower.log" 2>&1 < /dev/null &
 
 echo "[7/7] black-box recorder"

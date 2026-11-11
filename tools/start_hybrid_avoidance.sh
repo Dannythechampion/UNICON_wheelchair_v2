@@ -131,7 +131,12 @@ for pair in "DWA_CURV_MAX=$DWA_CURV_MAX" "DWA_YAW_ACCEL=$DWA_YAW_ACCEL"; do
       fail "${pair%%=*} must be a non-negative number, got '${pair#*=}'" ;;
   esac
 done
-export LAUNCH_FLOOR_MPS STRAIGHT_LAUNCH DWA_CURV_MAX DWA_YAW_ACCEL
+SMITH_RESIDUAL="${SMITH_RESIDUAL:-imu}"
+case "$SMITH_RESIDUAL" in
+  imu|wheel|off) ;;
+  *) fail "SMITH_RESIDUAL must be imu, wheel or off, got '$SMITH_RESIDUAL'" ;;
+esac
+export LAUNCH_FLOOR_MPS STRAIGHT_LAUNCH DWA_CURV_MAX DWA_YAW_ACCEL SMITH_RESIDUAL
 VN_IMU="${VN_IMU:-0}"
 case "$VN_IMU" in 0) BODY_FRAME_PROFILE=builtin ;; 1) BODY_FRAME_PROFILE=vn100 ;;
   *) fail "VN_IMU must be 0 or 1" ;; esac
@@ -342,6 +347,7 @@ if [ "$PREFER_DWA_GPU" = "true" ]; then
     _straight_launch:="$STRAIGHT_LAUNCH" \
     _curvature_max:="$DWA_CURV_MAX" \
     _yaw_accel:="$DWA_YAW_ACCEL" \
+    _smith_residual:="$SMITH_RESIDUAL" \
     _prefer_gpu:=true \
     _require_gpu:="$REQUIRE_GPU" \
     _cmd_topic:=/cmd_vel_planned \
@@ -362,6 +368,7 @@ else
     _straight_launch:="$STRAIGHT_LAUNCH" \
     _curvature_max:="$DWA_CURV_MAX" \
     _yaw_accel:="$DWA_YAW_ACCEL" \
+    _smith_residual:="$SMITH_RESIDUAL" \
     _prefer_gpu:=false _require_gpu:=false \
     _cmd_topic:=/cmd_vel_planned \
     > "$LOG/live_hybrid_dwa.log" 2>&1 < /dev/null &

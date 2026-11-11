@@ -1823,3 +1823,51 @@ def test_steering_limits_off_is_the_old_ramp(monkeypatch):
     _speed, w, _ = follower.command_for_target(0.6, 0.5, 0.1)
     # YAW_SLEW_RPS2 1.5 over the 0.1 s step.
     assert w == pytest.approx(-0.30 + 0.15)
+
+
+# ------------------------------------------ Smith model error, IMU (11-11)
+
+def test_residual_weight_is_full_under_the_deadband_and_off_at_cruise():
+    module, _Stamp = load_follower("dwa_follower")
+    w = module.residual_weight
+    assert w(0.0) == 1.0 and w(0.3) == 1.0
+    assert w(0.4) == pytest.approx(0.5)
+    assert w(0.5) == 0.0 and w(0.8) == 0.0
+
+
+def residual_follower(mode, imu_age_s=0.05, speed=0.2):
+    module, Stamp = load_follower("dwa_follower")
+    follower = module.DwaFollower.__new__(module.DwaFollower)
+    follower.smith_residual = mode
+    follower.measured_yaw_rate = 0.10
+    follower.measured_speed = speed
+    follower.imu_gz = 0.40
+    follower.imu_stamp = None if imu_age_s is None else Stamp(100.0 - imu_age_s)
+    return follower
+
+
+def test_imu_mode_measures_the_error_against_the_imu():
+    follower = residual_follower("imu")
+    assert follower.residual_inputs(100.0) == (pytest.approx(0.40), 1.0)
+    assert follower.residual_src == "imu"
+
+
+def test_a_stale_imu_falls_back_to_the_wheels():
+    follower = residual_follower("imu", imu_age_s=0.5)
+    yaw, weight = follower.residual_inputs(100.0)
+    assert yaw == pytest.approx(0.10) and follower.residual_src == "wheel"
+    follower = residual_follower("imu", imu_age_s=None)
+    assert follower.residual_inputs(100.0)[0] == pytest.approx(0.10)
+
+
+def test_off_carries_nothing_and_cruise_carries_nothing():
+    assert residual_follower("off").residual_inputs(100.0)[1] == 0.0
+    assert residual_follower("imu", speed=0.7).residual_inputs(100.0)[1] == 0.0
+
+
+def test_a_follower_built_without_the_switch_behaves_as_before():
+    module, Stamp = load_follower("dwa_follower")
+    follower = module.DwaFollower.__new__(module.DwaFollower)
+    follower.measured_yaw_rate = 0.1
+    follower.measured_speed = 0.2
+    assert follower.residual_inputs(100.0) == (pytest.approx(0.1), 0.0)

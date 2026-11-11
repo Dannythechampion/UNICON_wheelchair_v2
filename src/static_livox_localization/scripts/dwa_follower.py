@@ -113,6 +113,37 @@ YAW_SLEW_RPS2 = 1.5
 CURVATURE_MAX = 0.9
 YAW_ACCEL_RPS2 = 0.8
 
+# Smith model error (problem 3, 2026-11-11). The predictor assumes the yaw
+# rate it commanded is the yaw rate the chair makes. Under the wheels'
+# deadband it is not: on 11-09 |model - IMU| p90 was 0.27-0.36 rad/s below
+# 0.3 m/s in every run (about 7 deg over the 0.41 s horizon), and at
+# 0.3-0.5 m/s 0.25-0.33 in the failed evening runs against 0.12-0.18 in the
+# afternoon; at cruise 0.10-0.15. So the carried error (measured - model,
+# low-passed) is applied in full under RESIDUAL_FULL_BELOW_MPS, tapered to
+# nothing at RESIDUAL_ZERO_ABOVE_MPS - cruise keeps the prediction that was
+# measured to be better without it (11-02 replay) - and the yaw rate it is
+# measured against is the IMU's, as actuation_lag recommends: /wheel_status
+# reads yaw 10-15 % low in 0.05 rad/s counts. "wheel" uses the wheel report
+# instead, "off" is the behaviour before this.
+SMITH_RESIDUAL_MODES = ("off", "wheel", "imu")
+SMITH_RESIDUAL_DEFAULT = "imu"
+SMITH_RESIDUAL_TAU_ON_S = 0.3
+SMITH_IMU_TOPIC = "/livox/imu"
+SMITH_IMU_FRESH_S = 0.2
+RESIDUAL_FULL_BELOW_MPS = 0.30
+RESIDUAL_ZERO_ABOVE_MPS = 0.50
+
+
+def residual_weight(speed_mps, full_below=RESIDUAL_FULL_BELOW_MPS,
+                    zero_above=RESIDUAL_ZERO_ABOVE_MPS):
+    """1 under full_below, 0 over zero_above, linear between."""
+    speed = abs(float(speed_mps))
+    if speed <= full_below:
+        return 1.0
+    if speed >= zero_above:
+        return 0.0
+    return (zero_above - speed) / (zero_above - full_below)
+
 # A gate stop that lasts a few cycles leaves the chair still rolling - the
 # base takes 0.55 s to answer and the chair coasts - but the accepted /cmd_vel
 # reads zero. Ramping from that zero is what turned 0.2-1 s dropouts into a
@@ -266,8 +297,27 @@ class DwaFollower(WaypointFollower):
             raise ValueError("~latency_mode must be one of %s, got %r"
                              % (", ".join(LATENCY_MODES), self.latency_mode))
         # The model-error term is off unless asked for (see actuation_lag).
-        self.smith = SmithPredictor(residual_tau_s=float(rospy.get_param(
-            "~smith_residual_tau_s", RESIDUAL_TAU_S)))
+        # The model-error term (actuation_lag), measured where the model is
+        # wrong: low speed, against the IMU's yaw rate (see
+        # SMITH_RESIDUAL_MODES).
+        self.smith_residual = str(rospy.get_param(
+            "~smith_residual", SMITH_RESIDUAL_DEFAULT))
+        if self.smith_residual not in SMITH_RESIDUAL_MODES:
+            raise ValueError("~smith_residual must be one of %s, got %r" % (
+                ", ".join(SMITH_RESIDUAL_MODES), self.smith_residual))
+        residual_tau = float(rospy.get_param(
+            "~smith_residual_tau_s",
+            SMITH_RESIDUAL_TAU_ON_S if self.smith_residual != "off"
+            else RESIDUAL_TAU_S))
+        if self.smith_residual == "off":
+            residual_tau = 0.0
+        self.smith = SmithPredictor(residual_tau_s=residual_tau)
+        self.imu_gz = 0.0
+        self.imu_stamp = None
+        if self.smith_residual == "imu":
+            # Imported here so the desk tests' message stubs need not know it.
+            from sensor_msgs.msg import Imu
+            rospy.Subscriber(SMITH_IMU_TOPIC, Imu, self.on_imu, queue_size=50)
         rospy.loginfo("DWA latency compensation: %s%s", self.latency_mode,
                       " %.2f s" % self.latency_s
                       if self.latency_mode == "lead" else
@@ -527,6 +577,40 @@ class DwaFollower(WaypointFollower):
             launch.note_stop()
         WaypointFollower.send_stop(self)
 
+    def on_imu(self, message):
+        """The IMU's yaw rate, for the Smith model-error term."""
+        self.imu_gz = float(message.angular_velocity.z)
+        self.imu_stamp = rospy.Time.now()
+
+    def residual_inputs(self, now_s):
+        """(measured yaw rate, residual weight) for the Smith predictor.
+
+        The yaw rate is the IMU's in "imu" mode while it is fresh, else the
+        wheel report's (with a throttled warning: a dead IMU must not read
+        as a chair that stopped turning). The weight is residual_weight on
+        the wheels' speed, or 0 when the term is off.
+        """
+        mode = getattr(self, "smith_residual", "off")
+        yaw_rate = float(getattr(self, "measured_yaw_rate", 0.0))
+        self.residual_src = "wheel"
+        if mode == "imu":
+            stamp = getattr(self, "imu_stamp", None)
+            age = None if stamp is None else float(now_s) - stamp.to_sec()
+            if age is not None and -0.05 <= age <= SMITH_IMU_FRESH_S:
+                yaw_rate = float(self.imu_gz)
+                self.residual_src = "imu"
+            else:
+                rospy.logwarn_throttle(
+                    10.0, "Smith residual: IMU %s, using the wheel yaw rate",
+                    "never received" if age is None else "%.2f s old" % age)
+        if mode == "off":
+            self.residual_src = "off"
+            weight = 0.0
+        else:
+            weight = residual_weight(getattr(self, "measured_speed", 0.0))
+        self.residual_weight_now = weight
+        return yaw_rate, weight
+
     def on_odom(self, message):
         """Wheel odometry, kept for the anchor as well as for the base."""
         WaypointFollower.on_odom(self, message)
@@ -582,9 +666,10 @@ class DwaFollower(WaypointFollower):
         if self.latency_mode == "off":
             return state
         if self.latency_mode == "smith":
+            yaw_rate, weight = self.residual_inputs(now_s)
             return np.array(self.smith.predict(
-                state, self.measured_speed, self.measured_yaw_rate, now_s),
-                dtype=float)
+                state, self.measured_speed, yaw_rate, now_s,
+                residual_weight=weight), dtype=float)
         lead = self.latency_s
         if lead <= 0.0:
             return state
@@ -855,6 +940,11 @@ class DwaFollower(WaypointFollower):
             "curvature_max": num(getattr(self, "curvature_max", 0.0), 3),
             "yaw_accel": num(getattr(self, "yaw_accel", 0.0), 3),
             "steer_relaxed": getattr(self, "steer_relaxed_reason", ""),
+            "residual_mode": getattr(self, "smith_residual", "off"),
+            "residual_src": getattr(self, "residual_src", ""),
+            "residual_weight": num(getattr(self, "residual_weight_now", 0.0),
+                                   3),
+            "imu_gz": num(getattr(self, "imu_gz", float("nan"))),
         })
         smith = getattr(self, "smith", None)
         if self.latency_mode == "smith" and smith is not None:

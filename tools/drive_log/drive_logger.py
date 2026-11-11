@@ -231,9 +231,10 @@ def on_smith(m):
         ev("PLANNER POSE STALE %.2f s  @%s" % (age, fmt_pose())); S["stale_ev"] = time.time()
     # Launch after a stop (straight_launch.py, since 2026-11-11): the switches
     # this drive runs with, on every change, and each launch's start and end.
-    sw = (j.get("launch_floor"), j.get("straight_launch"), j.get("curvature_max"), j.get("yaw_accel"))
-    if sw != (None, None, None, None) and sw != S.get("launch_switches"):
-        ev("SWITCHES launch floor %s m/s, straight %s, curvature max %s, yaw accel %s" % sw)
+    sw = (j.get("launch_floor"), j.get("straight_launch"), j.get("curvature_max"), j.get("yaw_accel"),
+          j.get("residual_mode"))
+    if sw != (None, None, None, None, None) and sw != S.get("launch_switches"):
+        ev("SWITCHES launch floor %s m/s, straight %s, curvature max %s, yaw accel %s, smith residual %s" % sw)
         S["launch_switches"] = sw
     act = bool(j.get("launch"))
     if act and not S.get("launch_on"):
@@ -261,7 +262,7 @@ SM_COLS = ["sm_mode", "sm_pose_age_s", "sm_wheel_age_s", "sm_lead_m", "sm_lead_y
            # since 2026-11-11 (straight_launch.py)
            "sm_wheel_l", "sm_wheel_r", "sm_launch", "sm_launch_armed", "sm_launch_exit",
            "sm_launch_floor", "sm_straight_launch", "sm_curvature_max", "sm_yaw_accel",
-           "sm_steer_relaxed"]
+           "sm_steer_relaxed", "sm_residual_mode", "sm_residual_src", "sm_residual_weight", "sm_imu_gz"]
 
 def main():
     rospy.init_node("drive_logger", anonymous=True, disable_signals=True)
@@ -279,7 +280,8 @@ def main():
     for name in ("/wheel_cmd/turn_boost", "/wheel_cmd/wheel_separation_m",
                  "/tip_guard/launch_floor_mps", "/waypoint_follower/launch_floor_mps",
                  "/waypoint_follower/straight_launch", "/waypoint_follower/curvature_max",
-                 "/waypoint_follower/yaw_accel", "/waypoint_follower/latency_mode"):
+                 "/waypoint_follower/yaw_accel", "/waypoint_follower/smith_residual",
+                 "/waypoint_follower/smith_residual_tau_s", "/waypoint_follower/latency_mode"):
         try:
             ev("PARAM %s = %s" % (name, rosparam.get_param(name)))
         except Exception:

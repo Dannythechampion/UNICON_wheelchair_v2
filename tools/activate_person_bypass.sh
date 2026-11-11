@@ -60,6 +60,7 @@ LAUNCH_FLOOR_MPS="${LAUNCH_FLOOR_MPS:-$(rosparam get /waypoint_follower/launch_f
 STRAIGHT_LAUNCH="${STRAIGHT_LAUNCH:-$(rosparam get /waypoint_follower/straight_launch 2>/dev/null || echo false)}"
 DWA_CURV_MAX="${DWA_CURV_MAX:-$(rosparam get /waypoint_follower/curvature_max 2>/dev/null || echo 0.9)}"
 DWA_YAW_ACCEL="${DWA_YAW_ACCEL:-$(rosparam get /waypoint_follower/yaw_accel 2>/dev/null || echo 0.8)}"
+SMITH_RESIDUAL="${SMITH_RESIDUAL:-$(rosparam get /waypoint_follower/smith_residual 2>/dev/null || echo imu)}"
 for value in "$ROUTE" "$BAND" "$DRIVABLE_MASK"; do
   [ -f "$value" ] || fail "runtime asset disappeared: $value"
 done
@@ -138,6 +139,7 @@ setsid nohup env $SINGLE_THREAD_ENV \
   _straight_launch:="$STRAIGHT_LAUNCH" \
   _curvature_max:="$DWA_CURV_MAX" \
   _yaw_accel:="$DWA_YAW_ACCEL" \
+  _smith_residual:="$SMITH_RESIDUAL" \
   _prefer_gpu:="$PREFER_GPU" \
   _require_gpu:="$REQUIRE_GPU" \
   _cmd_topic:=/cmd_vel_planned \
