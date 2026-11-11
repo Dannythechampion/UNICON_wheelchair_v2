@@ -247,7 +247,21 @@ case "$STRAIGHT_LAUNCH" in
   *) echo "ERROR: STRAIGHT_LAUNCH must be true or false, got '$STRAIGHT_LAUNCH'" >&2
      exit 65 ;;
 esac
+# Low-speed steering limits (dwa_core.yaw_range, 2026-11-11).
+# DWA_CURV_MAX: |w| <= this * commanded speed (1/m); 0 = off. Default 0.9.
+# DWA_YAW_ACCEL: candidate window and ramp slope for w (rad/s^2); 0 = off,
+#   which restores the full +-0.5 candidate set and the 1.5 rad/s^2 ramp.
+DWA_CURV_MAX="${DWA_CURV_MAX:-0.9}"
+DWA_YAW_ACCEL="${DWA_YAW_ACCEL:-0.8}"
+for pair in "DWA_CURV_MAX=$DWA_CURV_MAX" "DWA_YAW_ACCEL=$DWA_YAW_ACCEL"; do
+  case "${pair#*=}" in
+    *[!0-9.]*|*.*.*|''|.)
+      echo "ERROR: ${pair%%=*} must be a non-negative number, got '${pair#*=}'" >&2
+      exit 65 ;;
+  esac
+done
 echo "  launch: floor $LAUNCH_FLOOR_MPS m/s, straight $STRAIGHT_LAUNCH; base turn boost $BASE_TURN_BOOST"
+echo "  steering: curvature max $DWA_CURV_MAX 1/m, yaw accel $DWA_YAW_ACCEL rad/s^2 (0 = off)"
 # OpenBLAS sizes its thread pool to the core count and then SPIN-WAITS
 # those threads between calls. Every numpy operation in the control-loop
 # nodes is tiny - a 25-step horizon, a few hundred band stations - so the
@@ -738,6 +752,8 @@ setsid nohup env $SINGLE_THREAD_ENV \
   _latency_mode:="$LATENCY_MODE" \
   _launch_floor_mps:="$LAUNCH_FLOOR_MPS" \
   _straight_launch:="$STRAIGHT_LAUNCH" \
+  _curvature_max:="$DWA_CURV_MAX" \
+  _yaw_accel:="$DWA_YAW_ACCEL" \
   > "$LOG/live_follower.log" 2>&1 < /dev/null &
 
 echo "[7/7] black-box recorder"

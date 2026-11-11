@@ -1739,3 +1739,57 @@ def test_the_smith_record_carries_the_launch_switches(monkeypatch):
     assert record["straight_launch"] is True
     assert record["launch_armed"] is True
     assert "wheel_l" in record and "wheel_r" in record
+
+
+# ------------------------------------------- B1 / B2 steering limits (11-11)
+
+class RangeRecordingPlanner(SteeringPlanner):
+    def plan(self, *a, yaw_range_for=None, **k):
+        self.yaw_range_for = yaw_range_for
+        return super(RangeRecordingPlanner, self).plan(*a, **k)
+
+
+def limited(monkeypatch, current_speed=0.6, last_w=0.0, left=0.6, right=0.6):
+    follower, published, commanded = launching(monkeypatch, left, right)
+    follower.planner = RangeRecordingPlanner()
+    follower.launch.armed = False
+    follower.current_speed = current_speed
+    follower.last_yaw_rate = last_w
+    follower.curvature_max = 0.9
+    follower.yaw_accel = 0.8
+    return follower, published, commanded
+
+
+def test_the_planner_gets_the_window_and_the_ramp_matches_it(monkeypatch):
+    follower, _published, commanded = limited(monkeypatch, 0.6, -0.30)
+
+    follower.step()
+
+    lo, hi = follower.planner.yaw_range_for(0.6)
+    assert (lo, hi) == (pytest.approx(-0.38), pytest.approx(-0.22))
+    # The planner asked for +0.3; the ramp moved the same 0.08 the window
+    # allows - the window IS the ramp.
+    assert commanded[-1].angular.z == pytest.approx(-0.22)
+
+
+def test_a_target_inside_the_window_goes_out_unchanged(monkeypatch):
+    follower, _p, _c = limited(monkeypatch, 0.6, -0.30)
+    speed, w, _ = follower.command_for_target(0.6, -0.25, 0.1)
+    assert w == pytest.approx(-0.25)
+
+
+def test_b1_caps_the_command_on_the_speed_sent(monkeypatch):
+    follower, _p, _c = limited(monkeypatch, 0.35, 0.30)
+    speed, w, _ = follower.command_for_target(0.35, 0.5, 0.1)
+    assert speed == pytest.approx(0.35)
+    assert w == pytest.approx(0.315)
+
+
+def test_steering_limits_off_is_the_old_ramp(monkeypatch):
+    follower, _p, _c = limited(monkeypatch, 0.6, -0.30)
+    follower.curvature_max = 0.0
+    follower.yaw_accel = 0.0
+    assert follower.yaw_range_for(0.1) is None
+    _speed, w, _ = follower.command_for_target(0.6, 0.5, 0.1)
+    # YAW_SLEW_RPS2 1.5 over the 0.1 s step.
+    assert w == pytest.approx(-0.30 + 0.15)

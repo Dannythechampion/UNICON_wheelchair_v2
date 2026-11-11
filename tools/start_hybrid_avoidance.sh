@@ -121,7 +121,17 @@ case "$STRAIGHT_LAUNCH" in
   true|false) ;;
   *) fail "STRAIGHT_LAUNCH must be true or false, got '$STRAIGHT_LAUNCH'" ;;
 esac
-export LAUNCH_FLOOR_MPS STRAIGHT_LAUNCH
+# Low-speed steering limits (dwa_core.yaw_range); same meaning and defaults
+# as in start_wheelchair_localization.sh. 0 = off.
+DWA_CURV_MAX="${DWA_CURV_MAX:-0.9}"
+DWA_YAW_ACCEL="${DWA_YAW_ACCEL:-0.8}"
+for pair in "DWA_CURV_MAX=$DWA_CURV_MAX" "DWA_YAW_ACCEL=$DWA_YAW_ACCEL"; do
+  case "${pair#*=}" in
+    *[!0-9.]*|*.*.*|''|.)
+      fail "${pair%%=*} must be a non-negative number, got '${pair#*=}'" ;;
+  esac
+done
+export LAUNCH_FLOOR_MPS STRAIGHT_LAUNCH DWA_CURV_MAX DWA_YAW_ACCEL
 VN_IMU="${VN_IMU:-0}"
 case "$VN_IMU" in 0) BODY_FRAME_PROFILE=builtin ;; 1) BODY_FRAME_PROFILE=vn100 ;;
   *) fail "VN_IMU must be 0 or 1" ;; esac
@@ -330,6 +340,8 @@ if [ "$PREFER_DWA_GPU" = "true" ]; then
     _latency_mode:="$LATENCY_MODE" \
     _launch_floor_mps:="$LAUNCH_FLOOR_MPS" \
     _straight_launch:="$STRAIGHT_LAUNCH" \
+    _curvature_max:="$DWA_CURV_MAX" \
+    _yaw_accel:="$DWA_YAW_ACCEL" \
     _prefer_gpu:=true \
     _require_gpu:="$REQUIRE_GPU" \
     _cmd_topic:=/cmd_vel_planned \
@@ -348,6 +360,8 @@ else
     _latency_mode:="$LATENCY_MODE" \
     _launch_floor_mps:="$LAUNCH_FLOOR_MPS" \
     _straight_launch:="$STRAIGHT_LAUNCH" \
+    _curvature_max:="$DWA_CURV_MAX" \
+    _yaw_accel:="$DWA_YAW_ACCEL" \
     _prefer_gpu:=false _require_gpu:=false \
     _cmd_topic:=/cmd_vel_planned \
     > "$LOG/live_hybrid_dwa.log" 2>&1 < /dev/null &

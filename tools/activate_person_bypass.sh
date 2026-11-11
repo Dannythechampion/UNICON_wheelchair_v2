@@ -58,6 +58,8 @@ PREFER_GPU="${PREFER_DWA_GPU:-$(rosparam get /waypoint_follower/prefer_gpu 2>/de
 # Carry the launch switches the stack was started with (straight_launch.py).
 LAUNCH_FLOOR_MPS="${LAUNCH_FLOOR_MPS:-$(rosparam get /waypoint_follower/launch_floor_mps 2>/dev/null || echo 0.35)}"
 STRAIGHT_LAUNCH="${STRAIGHT_LAUNCH:-$(rosparam get /waypoint_follower/straight_launch 2>/dev/null || echo true)}"
+DWA_CURV_MAX="${DWA_CURV_MAX:-$(rosparam get /waypoint_follower/curvature_max 2>/dev/null || echo 0.9)}"
+DWA_YAW_ACCEL="${DWA_YAW_ACCEL:-$(rosparam get /waypoint_follower/yaw_accel 2>/dev/null || echo 0.8)}"
 for value in "$ROUTE" "$BAND" "$DRIVABLE_MASK"; do
   [ -f "$value" ] || fail "runtime asset disappeared: $value"
 done
@@ -134,6 +136,8 @@ setsid nohup env $SINGLE_THREAD_ENV \
   _latency_mode:="$LATENCY_MODE" \
   _launch_floor_mps:="$LAUNCH_FLOOR_MPS" \
   _straight_launch:="$STRAIGHT_LAUNCH" \
+  _curvature_max:="$DWA_CURV_MAX" \
+  _yaw_accel:="$DWA_YAW_ACCEL" \
   _prefer_gpu:="$PREFER_GPU" \
   _require_gpu:="$REQUIRE_GPU" \
   _cmd_topic:=/cmd_vel_planned \

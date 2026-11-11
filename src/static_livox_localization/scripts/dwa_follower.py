@@ -88,7 +88,8 @@ from cluster_guard import (GO_ROUND, PERSON_BYPASS,
                            PERSON_BYPASS_SPEED_MPS, WAIT,
                            corridor_obstacle_points)
 from mpc_anchor import DEFAULT_GAIN, StateAnchor
-from mpc_command import MAX_COMMAND_GAP_S, advance_command, jerk_limited
+from mpc_command import (MAX_COMMAND_GAP_S, MIN_COMMAND_STEP_S,
+                         advance_command, jerk_limited)
 from route_mask import RouteMask
 from straight_launch import LAUNCH_SPEED_MPS, StraightLaunch, launch_speed
 from waypoint_follower import (WaypointFollower, CONTROL_HZ, CREEP_SPEED,
@@ -101,6 +102,17 @@ from waypoint_follower import (WaypointFollower, CONTROL_HZ, CREEP_SPEED,
 # acceleration for the same reason the pursuit follower allows it: stopping
 # sooner is never the unsafe direction.
 YAW_SLEW_RPS2 = 1.5
+# Low-speed steering limits (dwa_core.yaw_range, 2026-11-11). Both default
+# on; ~curvature_max 0 and ~yaw_accel 0 restore the behaviour before them
+# (no cap; candidates over the full +-MAX_YAW_RATE and the ramp at
+# YAW_SLEW_RPS2).
+#   B1 CURVATURE_MAX: |w| <= 0.9 * the speed commanded this cycle.
+#   B2 YAW_ACCEL: candidates within last w +- 0.8 rad/s^2 * dt, and the ramp
+#      slews at the same 0.8 - the base's own p90 yaw acceleration on 11-09
+#      was 0.66-0.90 rad/s^2, the clean runs' command slew p90 0.50-0.73,
+#      the evening's 1.00.
+CURVATURE_MAX = 0.9
+YAW_ACCEL_RPS2 = 0.8
 
 # A gate stop that lasts a few cycles leaves the chair still rolling - the
 # base takes 0.55 s to answer and the chair coasts - but the accepted /cmd_vel
@@ -296,6 +308,19 @@ class DwaFollower(WaypointFollower):
             "~launch_floor_mps", LAUNCH_SPEED_MPS))
         self.launch = StraightLaunch(enabled=bool(rospy.get_param(
             "~straight_launch", True)))
+        self.curvature_max = float(rospy.get_param(
+            "~curvature_max", CURVATURE_MAX))
+        self.yaw_accel = float(rospy.get_param(
+            "~yaw_accel", YAW_ACCEL_RPS2))
+        if not (0.0 <= self.curvature_max <= 5.0) or                 not (0.0 <= self.yaw_accel <= 5.0):
+            raise ValueError("~curvature_max / ~yaw_accel out of range: "
+                             "%r / %r" % (self.curvature_max, self.yaw_accel))
+        rospy.loginfo("DWA steering limits: curvature %s, yaw accel %s",
+                      "%.2f 1/m" % self.curvature_max
+                      if self.curvature_max > 0.0 else "off",
+                      "%.2f rad/s^2 (window + ramp)" % self.yaw_accel
+                      if self.yaw_accel > 0.0 else
+                      "off (ramp %.1f rad/s^2)" % YAW_SLEW_RPS2)
         rospy.loginfo("DWA launch: floor %.2f m/s, straight launch %s",
                       self.launch_floor_mps,
                       "on" if self.launch.enabled else "off")
@@ -407,10 +432,12 @@ class DwaFollower(WaypointFollower):
             -MAX_DECEL, MAX_ACCEL)
         command_accel = jerk_limited(
             wanted_accel, self.command_accel, step)
+        yaw_accel = float(getattr(self, "yaw_accel", 0.0))
+        slew = yaw_accel if yaw_accel > 0.0 else YAW_SLEW_RPS2
         accel = np.array([
             command_accel,
             np.clip((float(target_w) - self.last_yaw_rate) / step,
-                    -YAW_SLEW_RPS2, YAW_SLEW_RPS2)])
+                    -slew, slew)])
         speed, yaw_rate = advance_command(
             self.current_speed, self.last_yaw_rate, accel, elapsed,
             dwa_core.MAX_SPEED, MAX_YAW_RATE)
@@ -420,9 +447,43 @@ class DwaFollower(WaypointFollower):
             # Through the deadband in one step; the ramp (and its jerk
             # limit) resumes from the floor, not from a carried slope.
             speed, command_accel = floor, 0.0
+        curvature_max = float(getattr(self, "curvature_max", 0.0))
+        if curvature_max > 0.0:
+            # B1 on what is actually sent this cycle; cutting |w| down to
+            # the cap is allowed at once (dwa_core.yaw_range).
+            cap = min(MAX_YAW_RATE, curvature_max * max(0.0, speed))
+            yaw_rate = float(np.clip(yaw_rate, -cap, cap))
         if hold_yaw and float(target_v) >= dwa_core.TURN_FLOOR_SPEED:
             yaw_rate = 0.0
         return float(speed), float(yaw_rate), float(command_accel)
+
+    def yaw_range_for(self, elapsed, hold_yaw=False):
+        """v -> (lo, hi) for the planner, or None when B1 and B2 are off.
+
+        Built from command_for_target itself, so the speed B1 caps on is the
+        speed the ramp will send for that target this cycle (D included).
+        """
+        curvature_max = float(getattr(self, "curvature_max", 0.0))
+        yaw_accel = float(getattr(self, "yaw_accel", 0.0))
+        if curvature_max <= 0.0 and yaw_accel <= 0.0:
+            return None
+        # The step advance_command integrates over, so the window is exactly
+        # the change the ramp can make this cycle.
+        step = min(max(float(elapsed), MIN_COMMAND_STEP_S),
+                   MAX_COMMAND_GAP_S)
+        speeds = {}
+        # Taken now: the window is round the command already sent, and must
+        # not move if the closure is asked again after this cycle's publish.
+        last_w = float(self.last_yaw_rate)
+
+        def bounds(v):
+            if v not in speeds:
+                speeds[v] = self.command_for_target(v, last_w, elapsed)[0]
+            return dwa_core.yaw_range(
+                speeds[v], last_w, step,
+                curvature_max=curvature_max, yaw_accel=yaw_accel,
+                limit=MAX_YAW_RATE)
+        return bounds
 
     def log_launch_transition(self, was_active, held_s, left, right,
                               target_w):
@@ -654,6 +715,10 @@ class DwaFollower(WaypointFollower):
                 v, w, elapsed, hold_yaw=hold)
             candidate_veto = self.planner_candidate_veto(
                 now, decision, command_for_target)
+            extra = {}
+            yaw_range_for = self.yaw_range_for(elapsed, hold)
+            if yaw_range_for is not None:
+                extra["yaw_range_for"] = yaw_range_for
             return command_for_target, self.planner.plan(
                 state, obstacles, speed_cap=cap,
                 last_yaw_rate=self.last_yaw_rate,
@@ -662,7 +727,7 @@ class DwaFollower(WaypointFollower):
                     PERSON_BYPASS_CLEARANCE_M
                     if decision == PERSON_BYPASS
                     else dwa_core.OBSTACLE_FLOOR_M),
-                candidate_veto=candidate_veto)
+                candidate_veto=candidate_veto, **extra)
 
         command_for_target, (target_v, target_w, status) = plan_with(hold_yaw)
         if hold_yaw and status != "OK":
@@ -769,6 +834,8 @@ class DwaFollower(WaypointFollower):
             "launch": bool(launch is not None and launch.active),
             "launch_armed": bool(launch is not None and launch.armed),
             "launch_exit": "" if launch is None else launch.last_exit,
+            "curvature_max": num(getattr(self, "curvature_max", 0.0), 3),
+            "yaw_accel": num(getattr(self, "yaw_accel", 0.0), 3),
         })
         smith = getattr(self, "smith", None)
         if self.latency_mode == "smith" and smith is not None:

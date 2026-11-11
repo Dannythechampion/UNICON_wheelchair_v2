@@ -283,6 +283,67 @@ def yaw_samples(limit=MAX_YAW_RATE, count=YAW_SAMPLES):
     return tuple(np.linspace(-limit, limit, max(count, 3)))
 
 
+def yaw_range(commanded_speed, last_yaw_rate, elapsed_s, curvature_max=0.0,
+              yaw_accel=0.0, limit=MAX_YAW_RATE):
+    """(lo, hi): the yaw rates a candidate may command this cycle.
+
+    B1, curvature_max > 0: |w| <= curvature_max * commanded_speed, the speed
+    the ramp will actually put on the wire this cycle. The rollouts are a
+    fixed DISTANCE, so the same w is a far tighter arc at low speed: 0.45
+    rad/s at 0.35 m/s is a 0.78 m radius and 77 deg over the 1.05 m preview,
+    and on the 11-09 evening climb 35-40 % of DWA rows at 0.30-0.45 m/s sat
+    at |w| >= 0.4 (0 % at >= 0.65 m/s). 0.9 (1.1 m radius) is over twice the
+    route's tightest bend (2.5 m at the J corner) and above the p99 of the
+    clean 11-09 runs (0.65-0.75).
+
+    B2, yaw_accel > 0: within last_yaw_rate +/- yaw_accel * elapsed_s, the
+    same slope the command ramp applies, so the candidate scored is the
+    command sent instead of a target the ramp then chases.
+
+    Where the two do not overlap (the speed fell under a held turn) the cap
+    wins: reducing |w| is always allowed at once, like braking.
+    """
+    lo, hi = -float(limit), float(limit)
+    if curvature_max > 0.0:
+        cap = min(float(limit), float(curvature_max) * max(
+            0.0, float(commanded_speed)))
+        lo, hi = max(lo, -cap), min(hi, cap)
+    if yaw_accel > 0.0:
+        step = float(yaw_accel) * max(0.0, float(elapsed_s))
+        w_lo, w_hi = float(last_yaw_rate) - step, float(last_yaw_rate) + step
+        if w_hi < lo or w_lo > hi:
+            held = min(max(float(last_yaw_rate), lo), hi)
+            return held, held
+        lo, hi = max(lo, w_lo), min(hi, w_hi)
+    return lo, hi
+
+
+def candidate_pairs(cap, last_speed=None, rejected=(), yaw_range_for=None):
+    """The (v, w) candidates for one plan, shared by the CPU and GPU planners.
+
+    yaw_range_for(v) -> (lo, hi) restricts the yaw rates per speed sample
+    (yaw_range above); the grid points inside the range are kept and its
+    edges are added, so a narrow window still has candidates on it.
+    """
+    pairs = []
+    for v in speed_samples(cap, current=last_speed):
+        if v <= 0.0:
+            # Turning on the spot is not something this chair does below
+            # its rotation floor, and it is the manoeuvre that put it at
+            # a wall on 2026-08-04. Excluded.
+            continue
+        ws = yaw_samples()
+        if yaw_range_for is not None:
+            lo, hi = yaw_range_for(v)
+            inside = [w for w in ws if lo - 1e-9 <= w <= hi + 1e-9]
+            ws = sorted(set([round(float(w), 6) for w in inside]
+                            + [round(float(lo), 6), round(float(hi), 6)]))
+        for w in ws:
+            if not any(abs(w - value) < 1e-6 for value in rejected):
+                pairs.append((v, float(w)))
+    return pairs
+
+
 def rollout(state, v, w, distance_m=SIM_DISTANCE_M, steps=SIM_STEPS):
     """Where a constant (v, w) takes the chair, sampled along the way.
 
@@ -531,7 +592,8 @@ class DwaPlanner:
 
     def plan(self, state, obstacles=(), speed_cap=None, last_yaw_rate=0.0,
              last_speed=None, obstacle_floor_m=OBSTACLE_FLOOR_M,
-             rejected_yaw_rates=None, candidate_veto=None):
+             rejected_yaw_rates=None, candidate_veto=None,
+             yaw_range_for=None):
         """Best executable (v, w) from here, or a stop with a reason.
 
         Returns (v, w, status). status is OK, or the reason every candidate
@@ -553,13 +615,7 @@ class DwaPlanner:
                 getattr(self, "rejected_yaw_rates", ())
                 if rejected_yaw_rates is None else rejected_yaw_rates)
             if math.isfinite(float(value)))
-        pairs = [(v, w) for v in speed_samples(cap, current=last_speed)
-                 if v > 0.0
-                 # Turning on the spot is not something this chair does below
-                 # its rotation floor, and it is the manoeuvre that put it at
-                 # a wall on 2026-08-04. Excluded.
-                 for w in yaw_samples()
-                 if not any(abs(w - value) < 1e-6 for value in rejected)]
+        pairs = candidate_pairs(cap, last_speed, rejected, yaw_range_for)
         if not pairs:
             # Not a planning failure and not an obstacle: the cap handed in
             # is below the speed the wheels will actually turn for, so there
