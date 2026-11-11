@@ -264,8 +264,8 @@ done
 echo "  launch: floor $LAUNCH_FLOOR_MPS m/s, straight $STRAIGHT_LAUNCH; base turn boost $BASE_TURN_BOOST"
 echo "  steering: curvature max $DWA_CURV_MAX 1/m, yaw accel $DWA_YAW_ACCEL rad/s^2 (0 = off)"
 # Smith model error, low speed only (dwa_follower SMITH_RESIDUAL_MODES):
-# imu (default) | wheel | off.
-SMITH_RESIDUAL="${SMITH_RESIDUAL:-imu}"
+# imu | wheel | off (default since 11-11: mixed in the sim, field A/B first).
+SMITH_RESIDUAL="${SMITH_RESIDUAL:-off}"
 case "$SMITH_RESIDUAL" in
   imu|wheel|off) ;;
   *) echo "ERROR: SMITH_RESIDUAL must be imu, wheel or off, got '$SMITH_RESIDUAL'" >&2

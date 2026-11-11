@@ -126,7 +126,7 @@ YAW_ACCEL_RPS2 = 0.8
 # reads yaw 10-15 % low in 0.05 rad/s counts. "wheel" uses the wheel report
 # instead, "off" is the behaviour before this.
 SMITH_RESIDUAL_MODES = ("off", "wheel", "imu")
-SMITH_RESIDUAL_DEFAULT = "imu"
+SMITH_RESIDUAL_DEFAULT = "off"
 SMITH_RESIDUAL_TAU_ON_S = 0.3
 SMITH_IMU_TOPIC = "/livox/imu"
 SMITH_IMU_FRESH_S = 0.2

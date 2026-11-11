@@ -131,7 +131,7 @@ for pair in "DWA_CURV_MAX=$DWA_CURV_MAX" "DWA_YAW_ACCEL=$DWA_YAW_ACCEL"; do
       fail "${pair%%=*} must be a non-negative number, got '${pair#*=}'" ;;
   esac
 done
-SMITH_RESIDUAL="${SMITH_RESIDUAL:-imu}"
+SMITH_RESIDUAL="${SMITH_RESIDUAL:-off}"
 case "$SMITH_RESIDUAL" in
   imu|wheel|off) ;;
   *) fail "SMITH_RESIDUAL must be imu, wheel or off, got '$SMITH_RESIDUAL'" ;;
