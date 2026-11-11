@@ -109,6 +109,19 @@ case "$LATENCY_MODE" in
   lead|smith|off) ;;
   *) fail "LATENCY_MODE must be lead, smith or off, got '$LATENCY_MODE'" ;;
 esac
+# Launch after a stop (straight_launch.py); same meaning and defaults as in
+# start_wheelchair_localization.sh, which this script runs first.
+LAUNCH_FLOOR_MPS="${LAUNCH_FLOOR_MPS:-0.35}"
+STRAIGHT_LAUNCH="${STRAIGHT_LAUNCH:-true}"
+case "$LAUNCH_FLOOR_MPS" in
+  0|0.0|0.30|0.35|0.40) ;;
+  *) fail "LAUNCH_FLOOR_MPS must be 0, 0.30, 0.35 or 0.40, got '$LAUNCH_FLOOR_MPS'" ;;
+esac
+case "$STRAIGHT_LAUNCH" in
+  true|false) ;;
+  *) fail "STRAIGHT_LAUNCH must be true or false, got '$STRAIGHT_LAUNCH'" ;;
+esac
+export LAUNCH_FLOOR_MPS STRAIGHT_LAUNCH
 VN_IMU="${VN_IMU:-0}"
 case "$VN_IMU" in 0) BODY_FRAME_PROFILE=builtin ;; 1) BODY_FRAME_PROFILE=vn100 ;;
   *) fail "VN_IMU must be 0 or 1" ;; esac
@@ -315,6 +328,8 @@ if [ "$PREFER_DWA_GPU" = "true" ]; then
     _safety_policies:="$SAFETY_POLICIES" \
     _latency_s:="$LATENCY_S" \
     _latency_mode:="$LATENCY_MODE" \
+    _launch_floor_mps:="$LAUNCH_FLOOR_MPS" \
+    _straight_launch:="$STRAIGHT_LAUNCH" \
     _prefer_gpu:=true \
     _require_gpu:="$REQUIRE_GPU" \
     _cmd_topic:=/cmd_vel_planned \
@@ -331,6 +346,8 @@ else
     _safety_policies:="$SAFETY_POLICIES" \
     _latency_s:="$LATENCY_S" \
     _latency_mode:="$LATENCY_MODE" \
+    _launch_floor_mps:="$LAUNCH_FLOOR_MPS" \
+    _straight_launch:="$STRAIGHT_LAUNCH" \
     _prefer_gpu:=false _require_gpu:=false \
     _cmd_topic:=/cmd_vel_planned \
     > "$LOG/live_hybrid_dwa.log" 2>&1 < /dev/null &
@@ -372,6 +389,7 @@ say "final-stage relay, downstream of terrain guard"
 setsid nohup rosrun static_livox_localization tip_guard.py \
   __name:=tip_guard \
   /cmd_vel_gated:=/cmd_vel_terrain_safe \
+  _launch_floor_mps:="$LAUNCH_FLOOR_MPS" \
   > "$LOG/live_tipguard.log" 2>&1 < /dev/null &
 
 for topic in /perception/hybrid_status /semantic_safety/status \

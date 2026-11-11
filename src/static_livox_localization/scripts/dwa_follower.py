@@ -356,6 +356,11 @@ class DwaFollower(WaypointFollower):
         self.last_yaw_rate = float(message.angular.z)
         if accepted_speed <= 0.02:
             self.command_accel = 0.0
+            # Any stop that reached the base makes the next move a launch
+            # (straight_launch), coasting wheels included.
+            launch = getattr(self, "launch", None)
+            if launch is not None:
+                launch.note_stop()
             # The slope is dropped, the speed is not: resume from what the
             # wheels are doing, not from the zero the gate passed down.
             rolling = self.rolling_wheel_speed()
@@ -419,6 +424,20 @@ class DwaFollower(WaypointFollower):
             yaw_rate = 0.0
         return float(speed), float(yaw_rate), float(command_accel)
 
+    def log_launch_transition(self, was_active, held_s, left, right,
+                              target_w):
+        """One line per launch start and end, with the wheels' numbers."""
+        launch = self.launch
+        if launch.active and not was_active:
+            rospy.loginfo(
+                "LAUNCH start: wheels %.2f / %.2f m/s, planner w %+.2f held "
+                "at 0", left, right, target_w)
+        elif was_active and not launch.active:
+            rospy.loginfo(
+                "LAUNCH end (%s) after %.2f s: wheels %.2f / %.2f m/s",
+                launch.last_exit or "?",
+                -1.0 if held_s is None else held_s, left, right)
+
     def launch_inputs(self, now):
         """(left, right, fresh) from the base's own wheel report."""
         stamp = getattr(self, "wheel_status_stamp", None)
@@ -445,6 +464,7 @@ class DwaFollower(WaypointFollower):
         launch = getattr(self, "launch", None)
         if launch is not None:
             launch.reset("hold")
+            launch.note_stop()
         WaypointFollower.send_stop(self)
 
     def on_odom(self, message):
@@ -626,6 +646,8 @@ class DwaFollower(WaypointFollower):
         launch_allowed = decision not in (GO_ROUND, PERSON_BYPASS)
         hold_yaw = launch is not None and launch.eligible(
             self.current_speed, left, right, wheels_fresh, launch_allowed)
+        was_active = launch is not None and launch.active
+        held_s = None if launch is None else launch.held_for(now.to_sec())
 
         def plan_with(hold):
             command_for_target = lambda v, w: self.command_for_target(
@@ -646,7 +668,9 @@ class DwaFollower(WaypointFollower):
         if hold_yaw and status != "OK":
             # Straight was refused downstream; a straight launch is not worth
             # a stop. Plan again as before this existed.
+            # Disarmed for this launch, so the next cycles plan once.
             launch.reset("no straight candidate")
+            launch.armed = False
             hold_yaw = False
             command_for_target, (target_v, target_w, status) = \
                 plan_with(False)
@@ -659,6 +683,9 @@ class DwaFollower(WaypointFollower):
                     v, w, elapsed)
         elif launch is not None:
             launch.reset("not eligible")
+        if launch is not None:
+            self.log_launch_transition(was_active, held_s, left, right,
+                                       target_w)
         if status != "OK":
             if status != self.dwa_status:
                 if status == "SPEED_BELOW_FLOOR":
@@ -729,7 +756,20 @@ class DwaFollower(WaypointFollower):
             "lead_yaw_deg": num(math.degrees(dyaw), 2),
             "meas_v": num(getattr(self, "measured_speed", float("nan"))),
             "meas_w": num(getattr(self, "measured_yaw_rate", float("nan"))),
+            "wheel_l": num(getattr(self, "measured_left", float("nan"))),
+            "wheel_r": num(getattr(self, "measured_right", float("nan"))),
         }
+        launch = getattr(self, "launch", None)
+        record.update({
+            # Which of the launch switches this drive ran with, every
+            # message, so a drive log can never be read against the wrong
+            # configuration.
+            "launch_floor": num(getattr(self, "launch_floor_mps", 0.0), 3),
+            "straight_launch": bool(launch is not None and launch.enabled),
+            "launch": bool(launch is not None and launch.active),
+            "launch_armed": bool(launch is not None and launch.armed),
+            "launch_exit": "" if launch is None else launch.last_exit,
+        })
         smith = getattr(self, "smith", None)
         if self.latency_mode == "smith" and smith is not None:
             held = smith.command_at(now_s)

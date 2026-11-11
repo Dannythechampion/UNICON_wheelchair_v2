@@ -1694,6 +1694,10 @@ def test_a_refused_straight_launch_falls_back_to_steering(monkeypatch):
     assert follower.planner.calls == 2
     assert commanded[-1].linear.x == pytest.approx(0.35)
     assert commanded[-1].angular.z > 0.0
+    # Disarmed for this launch: the next cycle plans once, steering.
+    follower.step()
+    assert follower.planner.calls == 3
+    assert commanded[-1].angular.z > 0.0
 
 
 def test_rolling_wheels_are_not_a_launch(monkeypatch):
@@ -1704,3 +1708,34 @@ def test_rolling_wheels_are_not_a_launch(monkeypatch):
 
     assert commanded[-1].angular.z > 0.0
     assert not published[-1].endswith(" LAUNCH")
+
+
+def test_a_coasting_restart_with_one_wheel_down_goes_out_straight(
+        monkeypatch):
+    """18:52:33: the gate let go 1.3 s after stopping, with the wheels still
+    coasting; the accepted zero arms the launch, and the left wheel having
+    dropped under the release speed holds it straight."""
+    follower, published, commanded = launching(monkeypatch, 0.0, 0.11)
+    follower.launch.armed = False
+    follower.current_speed = 0.0
+    follower.measured_speed = 0.06
+    follower.on_accepted_command(STOP)
+
+    follower.step()
+
+    assert follower.launch.armed
+    assert commanded[-1].linear.x == pytest.approx(0.35)
+    assert commanded[-1].angular.z == 0.0
+    assert published[-1].endswith(" LAUNCH")
+
+
+def test_the_smith_record_carries_the_launch_switches(monkeypatch):
+    follower, _published, _commanded = launching(monkeypatch)
+    follower.latency_mode = "off"
+    state = np.array([10.0, 0.0, 0.0, 0.0, 0.0])
+    module, Stamp = load_follower("dwa_follower")
+    record = follower.smith_state_record(state, state, Stamp(100.0))
+    assert record["launch_floor"] == pytest.approx(0.35)
+    assert record["straight_launch"] is True
+    assert record["launch_armed"] is True
+    assert "wheel_l" in record and "wheel_r" in record

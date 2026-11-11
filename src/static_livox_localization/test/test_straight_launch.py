@@ -132,10 +132,42 @@ def test_not_without_a_fresh_wheel_report():
     assert not launch.eligible(0.0, 0.0, 0.0, False, True)
 
 
-def test_not_while_the_wheels_are_still_rolling():
-    """Resuming from a short gate stop rolls on; that is not a launch."""
+def released():
+    launch = launch_at_rest()
+    launch.update(0.0, 0.0, 0.8, 0.0, 0.0, True, True)
+    launch.update(0.5, 0.35, 0.8, 0.3, 0.3, True, True)
+    assert not launch.active and not launch.armed
+    return launch
+
+
+def test_a_short_stop_at_speed_costs_nothing():
+    """Both wheels still turning past the release speed: no hold at all."""
+    launch = released()
+    launch.note_stop()
+    assert launch.eligible(0.6, 0.6, 0.6, True, True)
+    assert not launch.update(10.0, 0.6, 0.8, 0.6, 0.6, True, True)
+    assert launch.last_exit == "wheels turning"
+
+
+def test_a_coasting_restart_with_one_wheel_down_is_held():
+    """18:52:33: restart 1.3 s after a gate stop, wheels coasting and the
+    left one decaying first. Held straight until both turn again."""
+    launch = released()
+    launch.note_stop()
+    assert launch.update(10.0, 0.33, 0.8, 0.20, 0.30, True, True)
+    assert launch.update(10.5, 0.35, 0.8, 0.00, 0.11, True, True)
+    assert not launch.update(11.0, 0.35, 0.8, 0.27, 0.29, True, True)
+
+
+def test_released_and_moving_is_not_rearmed_without_a_stop():
+    launch = released()
+    assert not launch.eligible(0.6, 0.1, 0.6, True, True)
+
+
+def test_a_stop_target_keeps_it_armed():
     launch = sl.StraightLaunch()
-    assert not launch.eligible(0.0, 0.4, 0.4, True, True)
+    launch.update(0.0, 0.0, 0.0, 0.0, 0.0, True, True)
+    assert launch.armed and not launch.active
 
 
 def test_a_stop_target_ends_the_launch():

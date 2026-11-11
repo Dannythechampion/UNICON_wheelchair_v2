@@ -229,6 +229,20 @@ def on_smith(m):
     age = j.get("pose_age_s")
     if age is not None and age > 0.3 and time.time() - S.get("stale_ev", 0.0) > 5.0:
         ev("PLANNER POSE STALE %.2f s  @%s" % (age, fmt_pose())); S["stale_ev"] = time.time()
+    # Launch after a stop (straight_launch.py, since 2026-11-11): the switches
+    # this drive runs with, on every change, and each launch's start and end.
+    sw = (j.get("launch_floor"), j.get("straight_launch"))
+    if sw != (None, None) and sw != S.get("launch_switches"):
+        ev("LAUNCH SWITCHES floor %s m/s, straight %s" % sw); S["launch_switches"] = sw
+    act = bool(j.get("launch"))
+    if act and not S.get("launch_on"):
+        S["launch_t0"] = time.time()
+        ev("LAUNCH start wheels %s / %s  @%s" % (j.get("wheel_l"), j.get("wheel_r"), fmt_pose()))
+    elif S.get("launch_on") and not act:
+        ev("LAUNCH end (%s) after ~%.1f s, wheels %s / %s  @%s" % (
+            j.get("launch_exit") or "?", time.time() - S.get("launch_t0", time.time()),
+            j.get("wheel_l"), j.get("wheel_r"), fmt_pose()))
+    S["launch_on"] = act
     S["smith"] = j; S["smith_rx"] = time.time()
 
 def fmt_pose():
@@ -238,7 +252,10 @@ def fmt_pose():
 # /dwa_follower/smith_state keys, prefixed sm_ in drive.csv (latest message).
 SM_COLS = ["sm_mode", "sm_pose_age_s", "sm_wheel_age_s", "sm_lead_m", "sm_lead_yaw_deg",
            "sm_meas_v", "sm_meas_w", "sm_model_v", "sm_model_w", "sm_resid_v", "sm_resid_w",
-           "sm_held_v", "sm_held_w", "sm_last_cmd_age_s", "sm_horizon_s"]
+           "sm_held_v", "sm_held_w", "sm_last_cmd_age_s", "sm_horizon_s",
+           # since 2026-11-11 (straight_launch.py)
+           "sm_wheel_l", "sm_wheel_r", "sm_launch", "sm_launch_armed", "sm_launch_exit",
+           "sm_launch_floor", "sm_straight_launch"]
 
 def main():
     rospy.init_node("drive_logger", anonymous=True, disable_signals=True)
@@ -252,6 +269,14 @@ def main():
     bxy = np.array([[s["x"], s["y"]] for s in band])
     caps = [s.get("max_speed_mps") for s in band]
     ev("logger start: route %s  out %s" % (os.path.basename(route_file), OUT))
+    # Base and final-stage switches, read once: they are fixed at stack start.
+    for name in ("/wheel_cmd/turn_boost", "/wheel_cmd/wheel_separation_m",
+                 "/tip_guard/launch_floor_mps", "/waypoint_follower/launch_floor_mps",
+                 "/waypoint_follower/straight_launch", "/waypoint_follower/latency_mode"):
+        try:
+            ev("PARAM %s = %s" % (name, rosparam.get_param(name)))
+        except Exception:
+            ev("PARAM %s unset" % name)
     rospy.Subscriber("/fast_lio_icp/pose", PoseWithCovarianceStamped, on_pose, queue_size=5)
     for t in ("/cmd_vel_planned", "/cmd_vel_raw", "/cmd_vel_gated", "/cmd_vel_terrain_safe", "/cmd_vel"):
         rospy.Subscriber(t, Twist, mk_twist(t), queue_size=10)

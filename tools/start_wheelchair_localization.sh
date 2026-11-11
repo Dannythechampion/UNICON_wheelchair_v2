@@ -229,6 +229,25 @@ case "$BASE_TURN_BOOST" in
   *) echo "ERROR: BASE_TURN_BOOST must be true or false, got '$BASE_TURN_BOOST'" >&2
      exit 65 ;;
 esac
+# Launch after a stop (straight_launch.py, 2026-11-11).
+# LAUNCH_FLOOR_MPS: the first command after a stop goes straight to this
+#   speed, in the follower and in tip_guard; 0 restores the plain ramp
+#   through the ~0.30 m/s wheel deadband.
+# STRAIGHT_LAUNCH: after a stop, hold the yaw rate at zero until both wheels
+#   report >= 0.25 m/s (or 2 s); false lets the planner steer at once.
+LAUNCH_FLOOR_MPS="${LAUNCH_FLOOR_MPS:-0.35}"
+STRAIGHT_LAUNCH="${STRAIGHT_LAUNCH:-true}"
+case "$LAUNCH_FLOOR_MPS" in
+  0|0.0|0.30|0.35|0.40) ;;
+  *) echo "ERROR: LAUNCH_FLOOR_MPS must be 0, 0.30, 0.35 or 0.40, got '$LAUNCH_FLOOR_MPS'" >&2
+     exit 65 ;;
+esac
+case "$STRAIGHT_LAUNCH" in
+  true|false) ;;
+  *) echo "ERROR: STRAIGHT_LAUNCH must be true or false, got '$STRAIGHT_LAUNCH'" >&2
+     exit 65 ;;
+esac
+echo "  launch: floor $LAUNCH_FLOOR_MPS m/s, straight $STRAIGHT_LAUNCH; base turn boost $BASE_TURN_BOOST"
 # OpenBLAS sizes its thread pool to the core count and then SPIN-WAITS
 # those threads between calls. Every numpy operation in the control-loop
 # nodes is tiny - a 25-step horizon, a few hundred band stations - so the
@@ -693,6 +712,7 @@ setsid nohup env $SINGLE_THREAD_ENV \
 setsid nohup rosrun static_livox_localization stop_watchdog.py \
   > "$LOG/live_stopwatchdog.log" 2>&1 < /dev/null &
 setsid nohup rosrun static_livox_localization tip_guard.py \
+  _launch_floor_mps:="$LAUNCH_FLOOR_MPS" \
   > "$LOG/live_tipguard.log" 2>&1 < /dev/null &
 # The follower steers around what this node reports as parked and waits for
 # what it reports as moving, so it starts BEFORE the follower and the follower
@@ -716,6 +736,8 @@ setsid nohup env $SINGLE_THREAD_ENV \
   _safety_policies:="$SAFETY_POLICIES" \
   _latency_s:="$LATENCY_S" \
   _latency_mode:="$LATENCY_MODE" \
+  _launch_floor_mps:="$LAUNCH_FLOOR_MPS" \
+  _straight_launch:="$STRAIGHT_LAUNCH" \
   > "$LOG/live_follower.log" 2>&1 < /dev/null &
 
 echo "[7/7] black-box recorder"
