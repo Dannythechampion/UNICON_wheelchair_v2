@@ -234,9 +234,10 @@ esac
 #   speed, in the follower and in tip_guard; 0 restores the plain ramp
 #   through the ~0.30 m/s wheel deadband.
 # STRAIGHT_LAUNCH: after a stop, hold the yaw rate at zero until both wheels
-#   report >= 0.25 m/s (or 2 s); false lets the planner steer at once.
+#   report >= 0.25 m/s (or 2 s). Default false since 11-11: in the sim it
+#   drove a chair left 50 deg off the route further off (cte 0.30 -> 0.63 m).
 LAUNCH_FLOOR_MPS="${LAUNCH_FLOOR_MPS:-0.35}"
-STRAIGHT_LAUNCH="${STRAIGHT_LAUNCH:-true}"
+STRAIGHT_LAUNCH="${STRAIGHT_LAUNCH:-false}"
 case "$LAUNCH_FLOOR_MPS" in
   0|0.0|0.30|0.35|0.40) ;;
   *) echo "ERROR: LAUNCH_FLOOR_MPS must be 0, 0.30, 0.35 or 0.40, got '$LAUNCH_FLOOR_MPS'" >&2

@@ -306,7 +306,7 @@ class DwaFollower(WaypointFollower):
         self.launch_floor_mps = float(rospy.get_param(
             "~launch_floor_mps", LAUNCH_SPEED_MPS))
         self.launch = StraightLaunch(enabled=bool(rospy.get_param(
-            "~straight_launch", True)))
+            "~straight_launch", False)))
         self.curvature_max = float(rospy.get_param(
             "~curvature_max", CURVATURE_MAX))
         self.yaw_accel = float(rospy.get_param(

@@ -112,7 +112,7 @@ esac
 # Launch after a stop (straight_launch.py); same meaning and defaults as in
 # start_wheelchair_localization.sh, which this script runs first.
 LAUNCH_FLOOR_MPS="${LAUNCH_FLOOR_MPS:-0.35}"
-STRAIGHT_LAUNCH="${STRAIGHT_LAUNCH:-true}"
+STRAIGHT_LAUNCH="${STRAIGHT_LAUNCH:-false}"
 case "$LAUNCH_FLOOR_MPS" in
   0|0.0|0.30|0.35|0.40) ;;
   *) fail "LAUNCH_FLOOR_MPS must be 0, 0.30, 0.35 or 0.40, got '$LAUNCH_FLOOR_MPS'" ;;

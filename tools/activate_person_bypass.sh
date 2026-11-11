@@ -57,7 +57,7 @@ REQUIRE_GPU="${REQUIRE_GPU:-$(rosparam get /waypoint_follower/require_gpu 2>/dev
 PREFER_GPU="${PREFER_DWA_GPU:-$(rosparam get /waypoint_follower/prefer_gpu 2>/dev/null || echo true)}"
 # Carry the launch switches the stack was started with (straight_launch.py).
 LAUNCH_FLOOR_MPS="${LAUNCH_FLOOR_MPS:-$(rosparam get /waypoint_follower/launch_floor_mps 2>/dev/null || echo 0.35)}"
-STRAIGHT_LAUNCH="${STRAIGHT_LAUNCH:-$(rosparam get /waypoint_follower/straight_launch 2>/dev/null || echo true)}"
+STRAIGHT_LAUNCH="${STRAIGHT_LAUNCH:-$(rosparam get /waypoint_follower/straight_launch 2>/dev/null || echo false)}"
 DWA_CURV_MAX="${DWA_CURV_MAX:-$(rosparam get /waypoint_follower/curvature_max 2>/dev/null || echo 0.9)}"
 DWA_YAW_ACCEL="${DWA_YAW_ACCEL:-$(rosparam get /waypoint_follower/yaw_accel 2>/dev/null || echo 0.8)}"
 for value in "$ROUTE" "$BAND" "$DRIVABLE_MASK"; do
