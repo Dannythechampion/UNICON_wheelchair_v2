@@ -1765,11 +1765,41 @@ def test_the_planner_gets_the_window_and_the_ramp_matches_it(monkeypatch):
 
     follower.step()
 
+    # Window = what the 0.8 rad/s^2 ramp reaches in 1 s from -0.30.
     lo, hi = follower.planner.yaw_range_for(0.6)
-    assert (lo, hi) == (pytest.approx(-0.38), pytest.approx(-0.22))
-    # The planner asked for +0.3; the ramp moved the same 0.08 the window
-    # allows - the window IS the ramp.
+    assert (lo, hi) == (pytest.approx(-0.5), pytest.approx(0.5))
+    # The planner asked for +0.3; the ramp moves 0.08 per 0.1 s cycle.
     assert commanded[-1].angular.z == pytest.approx(-0.22)
+
+
+def test_a_full_reversal_is_out_of_the_window(monkeypatch):
+    follower, _p, _c = limited(monkeypatch, 0.6, -0.45)
+    lo, hi = follower.yaw_range_for(0.1)(0.6)
+    assert hi == pytest.approx(0.35)
+
+
+class LimitedOffBandPlanner(SteeringPlanner):
+    """OFF_BAND inside the steering limits, a turn without them."""
+
+    def plan(self, *a, yaw_range_for=None, **k):
+        self.calls += 1
+        if yaw_range_for is not None:
+            return 0.0, 0.0, "OFF_BAND"
+        return 0.6, 0.45, "OK"
+
+
+def test_steering_limits_never_cause_a_stop(monkeypatch):
+    """11-11 sim: stopped 59 deg off the route, nothing near-straight was in
+    the band; the limits must give way rather than hold OFF_BAND forever."""
+    follower, published, commanded = limited(monkeypatch, 0.35, 0.0)
+    follower.planner = LimitedOffBandPlanner()
+
+    follower.step()
+
+    assert "STEER_RELAXED" in published[-1]
+    assert commanded[-1] != "STOP"
+    # Planned and ramped without the limits: the old 1.5 rad/s^2 slope.
+    assert commanded[-1].angular.z == pytest.approx(0.15)
 
 
 def test_a_target_inside_the_window_goes_out_unchanged(monkeypatch):

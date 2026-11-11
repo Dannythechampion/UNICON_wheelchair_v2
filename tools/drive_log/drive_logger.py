@@ -244,6 +244,10 @@ def on_smith(m):
             j.get("launch_exit") or "?", time.time() - S.get("launch_t0", time.time()),
             j.get("wheel_l"), j.get("wheel_r"), fmt_pose()))
     S["launch_on"] = act
+    rel = j.get("steer_relaxed") or ""
+    if rel and rel != S.get("steer_relaxed"):
+        ev("STEER LIMITS RELAXED (%s inside them)  @%s" % (rel, fmt_pose()))
+    S["steer_relaxed"] = rel
     S["smith"] = j; S["smith_rx"] = time.time()
 
 def fmt_pose():
@@ -256,7 +260,8 @@ SM_COLS = ["sm_mode", "sm_pose_age_s", "sm_wheel_age_s", "sm_lead_m", "sm_lead_y
            "sm_held_v", "sm_held_w", "sm_last_cmd_age_s", "sm_horizon_s",
            # since 2026-11-11 (straight_launch.py)
            "sm_wheel_l", "sm_wheel_r", "sm_launch", "sm_launch_armed", "sm_launch_exit",
-           "sm_launch_floor", "sm_straight_launch", "sm_curvature_max", "sm_yaw_accel"]
+           "sm_launch_floor", "sm_straight_launch", "sm_curvature_max", "sm_yaw_accel",
+           "sm_steer_relaxed"]
 
 def main():
     rospy.init_node("drive_logger", anonymous=True, disable_signals=True)

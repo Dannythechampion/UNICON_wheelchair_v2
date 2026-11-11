@@ -297,8 +297,14 @@ def yaw_range(commanded_speed, last_yaw_rate, elapsed_s, curvature_max=0.0,
     clean 11-09 runs (0.65-0.75).
 
     B2, yaw_accel > 0: within last_yaw_rate +/- yaw_accel * elapsed_s, the
-    same slope the command ramp applies, so the candidate scored is the
-    command sent instead of a target the ramp then chases.
+    yaw rates the ramp (slewing at the same yaw_accel) can reach inside
+    elapsed_s. The caller passes VELOCITY_WINDOW_S (1 s), the horizon the
+    speed samples already use, NOT one control period: a rollout holds its
+    w for the whole preview, and a 0.1 s window (+-0.08 rad/s) left a chair
+    stopped 50-60 deg off the route with only near-straight arcs, all of
+    them out of the band - OFF_BAND forever in the 11-11 sim, because the
+    window never opens while the command is zero. Over 1 s a full reversal
+    (+0.45 -> -0.45) is still out of reach, which is what B2 is for.
 
     Where the two do not overlap (the speed fell under a held turn) the cap
     wins: reducing |w| is always allowed at once, like braking.

@@ -88,8 +88,7 @@ from cluster_guard import (GO_ROUND, PERSON_BYPASS,
                            PERSON_BYPASS_SPEED_MPS, WAIT,
                            corridor_obstacle_points)
 from mpc_anchor import DEFAULT_GAIN, StateAnchor
-from mpc_command import (MAX_COMMAND_GAP_S, MIN_COMMAND_STEP_S,
-                         advance_command, jerk_limited)
+from mpc_command import MAX_COMMAND_GAP_S, advance_command, jerk_limited
 from route_mask import RouteMask
 from straight_launch import LAUNCH_SPEED_MPS, StraightLaunch, launch_speed
 from waypoint_follower import (WaypointFollower, CONTROL_HZ, CREEP_SPEED,
@@ -414,7 +413,7 @@ class DwaFollower(WaypointFollower):
         return min(measured, dwa_core.MAX_SPEED)
 
     def command_for_target(self, target_v, target_w, elapsed,
-                           hold_yaw=False):
+                           hold_yaw=False, limits=True):
         """The raw command the ramp will publish for one planner target.
 
         Candidate safety has to judge this command rather than the solver's
@@ -432,7 +431,7 @@ class DwaFollower(WaypointFollower):
             -MAX_DECEL, MAX_ACCEL)
         command_accel = jerk_limited(
             wanted_accel, self.command_accel, step)
-        yaw_accel = float(getattr(self, "yaw_accel", 0.0))
+        yaw_accel = float(getattr(self, "yaw_accel", 0.0)) if limits else 0.0
         slew = yaw_accel if yaw_accel > 0.0 else YAW_SLEW_RPS2
         accel = np.array([
             command_accel,
@@ -447,7 +446,8 @@ class DwaFollower(WaypointFollower):
             # Through the deadband in one step; the ramp (and its jerk
             # limit) resumes from the floor, not from a carried slope.
             speed, command_accel = floor, 0.0
-        curvature_max = float(getattr(self, "curvature_max", 0.0))
+        curvature_max = float(getattr(self, "curvature_max", 0.0)) \
+            if limits else 0.0
         if curvature_max > 0.0:
             # B1 on what is actually sent this cycle; cutting |w| down to
             # the cap is allowed at once (dwa_core.yaw_range).
@@ -467,10 +467,9 @@ class DwaFollower(WaypointFollower):
         yaw_accel = float(getattr(self, "yaw_accel", 0.0))
         if curvature_max <= 0.0 and yaw_accel <= 0.0:
             return None
-        # The step advance_command integrates over, so the window is exactly
-        # the change the ramp can make this cycle.
-        step = min(max(float(elapsed), MIN_COMMAND_STEP_S),
-                   MAX_COMMAND_GAP_S)
+        # The window is what the ramp can reach in the same 1 s horizon the
+        # speed samples use (dwa_core.yaw_range explains why not one cycle).
+        step = dwa_core.VELOCITY_WINDOW_S
         speeds = {}
         # Taken now: the window is round the command already sent, and must
         # not move if the closure is asked again after this cycle's publish.
@@ -710,13 +709,14 @@ class DwaFollower(WaypointFollower):
         was_active = launch is not None and launch.active
         held_s = None if launch is None else launch.held_for(now.to_sec())
 
-        def plan_with(hold):
+        def plan_with(hold, limits=True):
             command_for_target = lambda v, w: self.command_for_target(
-                v, w, elapsed, hold_yaw=hold)
+                v, w, elapsed, hold_yaw=hold, limits=limits)
             candidate_veto = self.planner_candidate_veto(
                 now, decision, command_for_target)
             extra = {}
-            yaw_range_for = self.yaw_range_for(elapsed, hold)
+            yaw_range_for = self.yaw_range_for(elapsed, hold) \
+                if limits else None
             if yaw_range_for is not None:
                 extra["yaw_range_for"] = yaw_range_for
             return command_for_target, self.planner.plan(
@@ -739,13 +739,30 @@ class DwaFollower(WaypointFollower):
             hold_yaw = False
             command_for_target, (target_v, target_w, status) = \
                 plan_with(False)
+        relaxed = False
+        if status != "OK" and self.yaw_range_for(elapsed) is not None:
+            # B1/B2 are comfort limits, never a reason to stop: if nothing
+            # inside them is admissible (a chair left skewed off the route
+            # needs a tighter or quicker turn than they allow), plan this
+            # cycle as before they existed.
+            limited_status = status
+            command_for_target, (target_v, target_w, status) = plan_with(
+                hold_yaw, limits=False)
+            relaxed = status == "OK"
+            if relaxed and getattr(self, "steer_relaxed_reason", "") != \
+                    limited_status:
+                rospy.logwarn("DWA %s inside the steering limits; this "
+                              "cycle planned without them", limited_status)
+            self.steer_relaxed_reason = limited_status if relaxed else ""
+        else:
+            self.steer_relaxed_reason = ""
         if hold_yaw:
             hold_yaw = launch.update(
                 now.to_sec(), self.current_speed, target_v, left, right,
                 wheels_fresh, launch_allowed)
             if not hold_yaw:
                 command_for_target = lambda v, w: self.command_for_target(
-                    v, w, elapsed)
+                    v, w, elapsed, limits=not relaxed)
         elif launch is not None:
             launch.reset("not eligible")
         if launch is not None:
@@ -784,7 +801,8 @@ class DwaFollower(WaypointFollower):
             "DWA wp=%d/%d v=%.2f w=%+.2f target %.2f/%+.2f%s%s" % (
                 self.nearest_index, len(self.waypoints), speed, yaw_rate,
                 target_v, target_w,
-                " LAUNCH" if hold_yaw else "",
+                (" LAUNCH" if hold_yaw else "")
+                + (" STEER_RELAXED" if relaxed else ""),
                 "" if self.policies else " POLICIES_OFF"), "DWA:OK")
 
     def smith_state_record(self, anchored, led, now):
@@ -836,6 +854,7 @@ class DwaFollower(WaypointFollower):
             "launch_exit": "" if launch is None else launch.last_exit,
             "curvature_max": num(getattr(self, "curvature_max", 0.0), 3),
             "yaw_accel": num(getattr(self, "yaw_accel", 0.0), 3),
+            "steer_relaxed": getattr(self, "steer_relaxed_reason", ""),
         })
         smith = getattr(self, "smith", None)
         if self.latency_mode == "smith" and smith is not None:
