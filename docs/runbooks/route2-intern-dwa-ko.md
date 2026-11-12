@@ -187,6 +187,38 @@ install -m 755 $R/tools/nuc_home/*.sh ~/
 0.55 s 선행 보정과 비교하려면 `LATENCY_MODE=lead ~/start_route2_intern.sh`로 띄우고,
 어느 모드로 달렸는지 기록한다.
 
+### 저속 출발·조향 스위치 (2026-11-11, `feat/dwa-straight-launch`)
+
+11-09 저녁 A→J 오르막 실패(보행자 정지 뒤 재출발에서 조향이 흔들리고, 정상에서 급감속·스핀)를
+막으려고 넣은 기능들이다. 모두 환경변수로 켜고 끈다. `~/start_route2_intern.sh`
+(`start_hybrid_avoidance.sh` 포함) 앞에 붙인다.
+
+| 변수 | 기본 | 하는 일 |
+|---|---|---|
+| `LAUNCH_FLOOR_MPS` | `0.35` | 멈춘 상태에서 출발할 때 명령을 0.35로 바로 낸다(바퀴 데드밴드 ~0.3 m/s를 기어오르지 않음). follower와 tip_guard 둘 다. `0`이면 예전 램프 |
+| `STRAIGHT_LAUNCH` | `false` | 정지 뒤 두 바퀴가 0.25 m/s를 넘을 때까지 w=0. 시뮬레이션에서 방향 오차가 클 때 경로 이탈을 키워서 기본 끔 |
+| `DWA_CURV_MAX` | `0.9` | 저속 곡률 상한: \|w\| ≤ 0.9 × 명령 속도. `0`이면 끔 |
+| `DWA_YAW_ACCEL` | `0.8` | DWA 후보 w를 직전 w ± 0.8 rad/s² × 1 s로 제한하고 명령 램프도 0.8. `0`이면 예전(±0.5 전체, 1.5 rad/s²) |
+| `SMITH_RESIDUAL` | `off` | 저속(<0.3 m/s)에서 Smith 모델 오차를 IMU(`imu`) 또는 바퀴(`wheel`) 기준으로 보정. 시뮬레이션 결과가 엇갈려 기본 끔 |
+| `TIP_RESUME` | `true` | 0이 한 번 끼었다가 다시 주행 명령이 오면, tip_guard가 0부터가 아니라 현재 바퀴 속도에서 이어서 낸다(요청보다 높게는 안 냄) |
+| `TIP_NO_REVERSE` | `true` | tip_guard 최종 단계에서 \|w\| ≤ 2v/바퀴간격: 안쪽 바퀴가 후진(87)하지 않는다 |
+| `BASE_TURN_BOOST` | `false` | (기존) 저속 회전 때 두 바퀴에 같은 속도를 더함. 현장 비교 대상 |
+
+기능 하나만 끄려면 그 변수만 바꾼다. 예:
+
+```bash
+DWA_CURV_MAX=0 DWA_YAW_ACCEL=0 ~/start_route2_intern.sh
+```
+
+현장 비교는 같은 날 같은 구간을 설정만 바꿔 연달아 달린다(보행자 수가 결과를 크게 바꾼다).
+권장 순서: 전부 끔(`LAUNCH_FLOOR_MPS=0 DWA_CURV_MAX=0 DWA_YAW_ACCEL=0 TIP_RESUME=false TIP_NO_REVERSE=false`)
+→ 기본값 → 기본값 + `BASE_TURN_BOOST=true`.
+
+어떤 설정으로 달렸는지는 drive log에 남는다: `events.log`의 `PARAM ...`, `SWITCHES ...` 줄,
+`drive.csv`의 `sm_launch_floor`, `sm_curvature_max`, `sm_yaw_accel`, `sm_residual_mode` 열.
+볼 것: `LAUNCH start/end`, `STEER LIMITS RELAXED`(제한 안에서 갈 곳이 없어 그 주기만 해제),
+`TIP W_CLAMPED`(후진 방지 작동), tip 열의 `RESUMED`, 그리고 `HARD TURN` 줄 수.
+
 ## 4. 주행 전 점검
 
 먼저 비상정지: 다른 터미널에서 `rostopic echo /wheel_status`를 띄우고 E-stop을 눌렀다

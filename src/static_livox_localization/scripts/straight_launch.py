@@ -121,7 +121,8 @@ class StraightLaunch:
             self.active = True
             self.since_s = now_s
             self.last_exit = ""
-        if float(left_mps) >= self.release_mps and                 float(right_mps) >= self.release_mps:
+        if float(left_mps) >= self.release_mps and \
+                float(right_mps) >= self.release_mps:
             self.armed = False
             self.reset("wheels turning")
             return False

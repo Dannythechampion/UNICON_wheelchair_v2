@@ -361,7 +361,8 @@ class DwaFollower(WaypointFollower):
             "~curvature_max", CURVATURE_MAX))
         self.yaw_accel = float(rospy.get_param(
             "~yaw_accel", YAW_ACCEL_RPS2))
-        if not (0.0 <= self.curvature_max <= 5.0) or                 not (0.0 <= self.yaw_accel <= 5.0):
+        if not (0.0 <= self.curvature_max <= 5.0) or \
+                not (0.0 <= self.yaw_accel <= 5.0):
             raise ValueError("~curvature_max / ~yaw_accel out of range: "
                              "%r / %r" % (self.curvature_max, self.yaw_accel))
         rospy.loginfo("DWA steering limits: curvature %s, yaw accel %s",
