@@ -12,6 +12,8 @@ LOG_DIR="${PID_LIDAR_TEST_LOG_DIR:-$HOME/pid_lidar_test_logs}"
 ROS_SETUP="${ROS_SETUP:-/opt/ros/noetic/setup.bash}"
 LIVOX_WS="${LIVOX_WS:-$HOME/ws_livox}"
 MONITOR="$HERE/pid_lidar_test_monitor.py"
+READY_SCRIPT="$HERE/pid_ready.sh"
+READY_STATE_DIR="${PID_READY_STATE_DIR:-$HOME/.local/state/pid_ready}"
 export ROS_MASTER_URI="${ROS_MASTER_URI:-http://127.0.0.1:11311}"
 # Never start/stop a master on another host; this is a NUC-local test.
 case "$ROS_MASTER_URI" in
@@ -92,6 +94,43 @@ case "$MODE" in
 esac
 
 [[ ! -f "$STATE_DIR/active" ]] || fail "LiDAR test is already active. Stop it before restarting."
+
+# A test owns its *own* ROS Master and Livox process. Stop a registered
+# READY session first; never adopt/kill an unknown ROS session.
+# Do not tear down sensors while autonomous driving is active or unverified.
+[[ -f "$ROS_SETUP" ]] || fail "ROS Noetic setup missing: $ROS_SETUP"
+set +u
+source "$ROS_SETUP"
+set -u
+mkdir -p "$READY_STATE_DIR"
+exec 8>"$READY_STATE_DIR/start.lock"
+flock -n 8 || fail "READY startup is still running. Complete READY before testing."
+if timeout 3 rosnode list 2>/dev/null | grep -Ex '/ff_pid|/pid_safety|/pid_astar_planner' >/dev/null || \
+   pgrep -f '[f]f_pid_node.py' >/dev/null 2>&1; then
+  fail "DRIVE components remain active. Verify MANUAL and run pid_stop.sh first."
+fi
+# READY may have initialized the wheel base even if its overall startup failed.
+# If a wheel-status publisher exists, stop only after a positive MANUAL + still
+# wheel check. A missing status must never be interpreted as stopped.
+if timeout 3 rostopic info /wheel_status 2>/dev/null | \
+   awk '/^Publishers:/ {p=1;next} /^Subscribers:/ {p=0} p && /^[[:space:]]*\\*/ {found=1} END {exit !found}'; then
+  [[ -f "$HERE/pid_drive_check.py" ]] || fail "Wheel stop checker is missing"
+  python3 "$HERE/pid_drive_check.py" wheel --mode MANUAL --stopped --timeout 4 || \
+    fail "Wheel stopped+MANUAL state is not verified. Do not tear down READY."
+elif pgrep -f '[w]heel.launch' >/dev/null 2>&1; then
+  # A running base without wheel feedback cannot be assumed stationary.
+  fail "Wheel base remains active but stopped+MANUAL feedback is unavailable."
+fi
+if [[ -s "$READY_STATE_DIR/latest_run_dir" ]]; then
+  echo "[STEP] 기존 READY 시스템 종료 및 기록 정리 중"
+  [[ -f "$READY_SCRIPT" ]] || fail "READY cleanup script is missing: $READY_SCRIPT"
+  if ! bash "$READY_SCRIPT" stop 8>&-; then
+    fail "READY cleanup did not finish. Inspect READY logs and registered processes."
+  fi
+  echo "[STEP] READY 종료 확인 완료"
+fi
+flock -u 8
+exec 8>&-
 [[ -f "$ROS_SETUP" ]] || fail "ROS Noetic setup missing: $ROS_SETUP"
 [[ -f "$LIVOX_WS/devel/setup.bash" ]] || fail "Livox workspace setup missing: $LIVOX_WS/devel/setup.bash"
 [[ -f "$MONITOR" ]] || fail "LiDAR test monitor missing: $MONITOR"
@@ -126,6 +165,7 @@ rollback() {
   exit "$exit_code"
 }
 trap rollback EXIT
+echo "[STEP] ROS Master 시작 중"
 start_detached master roscore
 master_up=false
 for ((i=0; i<50; i++)); do
@@ -133,10 +173,12 @@ for ((i=0; i<50; i++)); do
   sleep 0.2
 done
 [[ "$master_up" == true ]] || fail "ROS Master did not start; see $RUN_DIR/master.log"
+echo "[STEP] Livox 드라이버 시작 중"
 start_detached driver roslaunch livox_ros_driver2 msg_MID360.launch
 sleep 0.5
 read -r driver_pid < "$STATE_DIR/driver.pid"
 pid_alive "$driver_pid" || fail "Livox driver exited early; see $RUN_DIR/driver.log"
+echo "[STEP] LiDAR·IMU 상태 모니터 시작 중"
 start_detached monitor python3 -u "$MONITOR" --state-dir "$STATE_DIR"
 sleep 0.5
 read -r monitor_pid < "$STATE_DIR/monitor.pid"

@@ -303,6 +303,13 @@ def watch_states(args):
             if new_state != state['drive']:
                 state['drive'] = new_state
                 print('[FF-PD] %s' % new_state, flush=True)
+                if new_state in ('GOAL_REACHED', 'MANUAL_INTERVENTION'):
+                    print(json.dumps({
+                        'type': 'drive_event', 'status': new_state,
+                        'reason': new_state, 'route': args.route,
+                        'message': ('목적지 도착 및 바퀴 정지 확인' if new_state == 'GOAL_REACHED'
+                                    else '조이스틱 수동 개입으로 자율주행 제어 중단'),
+                    }, ensure_ascii=False, separators=(',', ':')), flush=True)
             if station is not None:
                 state['station'] = station
 
@@ -324,6 +331,9 @@ def watch_states(args):
     master = rosgraph.Master(rospy.get_name())
     last_progress = time.monotonic()
     while not rospy.is_shutdown():
+        if args.stop_marker and os.path.isfile(args.stop_marker):
+            print('[INFO] 외부 주행 종료 검증 완료. 감시 프로그램을 종료합니다.', flush=True)
+            break
         try:
             master.lookupNode('/ff_pid')
         except Exception:
@@ -380,6 +390,8 @@ def main():
                        help="emit one machine-readable drive_preflight JSON line on stdout")
     watch = sub.add_parser("watch", help="Quiet drive status and periodic progress")
     watch.add_argument("--route", required=True)
+    watch.add_argument("--stop-marker", default=None,
+                       help="Session-specific verified STOP notification from pid_stop.sh")
     sub.add_parser("position", help="Print current GICP Map pose only")
     args = parser.parse_args()
     try:

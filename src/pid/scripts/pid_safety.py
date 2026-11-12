@@ -28,7 +28,9 @@ from replan_path import checked_path, OBSTACLE_RADIUS_M, MASK_RESERVE_M
 from pid_occupancy_geometry import OccupiedCells
 from pid_static_window import StaticVoteWindow, STATIC_WATCH_M
 from receding_motion import RecedingTracks
-from obstacle_policy import obstacle_restriction
+from obstacle_policy import (obstacle_restriction,
+                             FRONT_STOP_M as POLICY_FRONT_STOP_M,
+                             FRONT_SLOW_M as POLICY_FRONT_SLOW_M)
 
 localization_scripts = os.path.join(
     rospkg.RosPack().get_path("static_livox_localization"), "scripts")
@@ -50,14 +52,21 @@ CHAIR_FRONT_M = 0.52                       # Axle-centred front estimate
 CHAIR_REAR_M = 0.30                        # Provisional rear extent
 MASK_CLEARANCE_M = 0.20                    # Predicted/current centre to mask
 NEAR_STOP_GAP_M = 0.50                     # Box-to-chair footprint gap
-FRONT_STOP_M = 1.00                        # Obstacle path distance from front
-FRONT_SLOW_M = 2.00
+FRONT_STOP_M = POLICY_FRONT_STOP_M         # Single source of truth: obstacle_policy.py
+FRONT_SLOW_M = POLICY_FRONT_SLOW_M         # Also used by path_gap lookahead
 OBSTACLE_SLOW_MIN_MPS = 0.40               # Limit approached just above FRONT_STOP_M; at/below it STOP
 CTE_SLOW_PER_M_MPS = 1.00                  # For each 1 cm beyond 0.30 m, reduce 0.01 m/s
 CTE_SPEED_FLOOR_MPS = 0.40
 CURVATURE_PREVIEW_M = 2.00                 # Ahead from current route station
 CURVATURE_SPEED_FLOOR_MPS = 0.60
-CURVATURE_FULL_SLOW_AT_INV_M = 0.40        # |kappa|=0.0 -> 0.8, >=0.4 -> 0.6 m/s
+CURVATURE_SLOW_START_INV_M = 0.20            # Top-20% |kappa| in next 2m >= 0.20 -> 0.6 m/s
+# Two mapped speed bumps, localized from FF-PD Nov 9/10 IMU/GICP logs.
+# These are map coordinates, not DWA speed-band or waypoint indices.
+BUMP_WORLD_XY_M = ((88.17, -12.31), (86.53, 2.44))
+BUMP_ROUTE_MATCH_MAX_M = 0.50             # Ignore bumps not traversed by the active route
+BUMP_APPROACH_M = 3.00                    # Start lowering the speed ceiling this far ahead
+BUMP_EXIT_M = 3.00                        # Hold low cap beyond second bump
+BUMP_SPEED_CAP_MPS = 0.40                 # Provisional; physical bump safety NOT verified
 # Limit speed as the chair approaches the final waypoint. The controller still
 # owns final stopping at GOAL_TOLERANCE_M=0.40; keep these distances in sync.
 GOAL_SLOWDOWN_START_M = 3.00              # Remaining route distance for deceleration [m]
@@ -164,11 +173,11 @@ def speed_caps(route, station, cte):
     cte_cap = clamp(MAX_SPEED_MPS - CTE_SLOW_PER_M_MPS * excess,
                     CTE_SPEED_FLOOR_MPS, MAX_SPEED_MPS)
     curvature = route.top20_abs_curvature(station, CURVATURE_PREVIEW_M)
-    # Linear: 0.0 1/m -> 0.8 m/s; 0.4 1/m -> 0.6 m/s (then clamped).
-    curve_cap = clamp(
-        MAX_SPEED_MPS - (MAX_SPEED_MPS - CURVATURE_SPEED_FLOOR_MPS)
-        * curvature / CURVATURE_FULL_SLOW_AT_INV_M,
-        CURVATURE_SPEED_FLOOR_MPS, MAX_SPEED_MPS)
+    # Fixed cap when the top-20% mean of |kappa| over the next 2 m reaches 0.2 1/m.
+    # No curvature SLOW for gentler path segments; obstacle/bump/CTE/goal caps still apply.
+    curve_cap = (CURVATURE_SPEED_FLOOR_MPS
+                 if curvature >= CURVATURE_SLOW_START_INV_M
+                 else MAX_SPEED_MPS)
     return cte_cap, curve_cap, curvature
 
 
@@ -180,6 +189,42 @@ def obstacle_speed_cap(distance):
     # Provisional linear profile; measured braking distance has priority.
     ratio = (distance - FRONT_STOP_M) / (FRONT_SLOW_M - FRONT_STOP_M)
     return OBSTACLE_SLOW_MIN_MPS + ratio * (MAX_SPEED_MPS - OBSTACLE_SLOW_MIN_MPS)
+
+
+def locate_route_bumps(route):
+    """Return bump stations in active-route order, only for geometrically matched paths.
+
+    Recompute on each committed A* route; never use original-route indices on a detour.
+    The route is assumed to represent the travelled chair-centre reference path.
+    """
+    stations = []
+    for x, y in BUMP_WORLD_XY_M:
+        # Reuse Route.project without progress hint; this is a global map lookup.
+        station, _, lateral_distance, _ = route.project(x, y, hint=None)
+        if lateral_distance <= BUMP_ROUTE_MATCH_MAX_M:
+            stations.append(float(station))
+    if len(stations) != len(BUMP_WORLD_XY_M):
+        return ()
+    stations.sort()  # Forward path order, regardless of A->D5 or D5->A.
+    return tuple(stations)
+
+
+def bump_speed_cap(station, bump_stations):
+    """0.8->0.4 m/s over 3 m approaching first bump, then hold past second bump.
+
+    No full release until after the second bump plus BUMP_EXIT_M; other Safety
+    caps and STOP decisions always have priority. There is no slowdown when
+    bumps are not found on the current route.
+    """
+    if len(bump_stations) != 2:
+        return MAX_SPEED_MPS
+    first, last = bump_stations
+    if station < first - BUMP_APPROACH_M or station > last + BUMP_EXIT_M:
+        return MAX_SPEED_MPS
+    if station >= first:
+        return BUMP_SPEED_CAP_MPS
+    fraction = (first - station) / BUMP_APPROACH_M
+    return BUMP_SPEED_CAP_MPS + fraction * (MAX_SPEED_MPS - BUMP_SPEED_CAP_MPS)
 
 
 def goal_speed_cap(remaining_m):
@@ -209,8 +254,11 @@ class Safety:
                 and 0 < CTE_SPEED_FLOOR_MPS <= MAX_SPEED_MPS
                 and 0 < CURVATURE_SPEED_FLOOR_MPS <= MAX_SPEED_MPS
                 and CTE_SPEED_START_M >= CTE_DEADZONE_M
-                and CTE_SLOW_PER_M_MPS > 0 and CURVATURE_FULL_SLOW_AT_INV_M > 0
+                and CTE_SLOW_PER_M_MPS > 0 and CURVATURE_SLOW_START_INV_M > 0
                 and FRONT_STOP_M < FRONT_SLOW_M
+                and 0 < BUMP_SPEED_CAP_MPS <= MAX_SPEED_MPS
+                and 0 < BUMP_APPROACH_M and 0 <= BUMP_EXIT_M
+                and BUMP_ROUTE_MATCH_MAX_M > 0
                 and 0 < GOAL_TOLERANCE_M < GOAL_SLOWDOWN_START_M
                 and CONTROL_MAX_V_MPS >= GOAL_APPROACH_SPEED_MPS > 0.30
                 and 0 < CORRIDOR_HALF_WIDTH_M and 0 < POLICY_PERIOD_S):
@@ -219,6 +267,7 @@ class Safety:
             os.path.realpath(rospkg.RosPack().get_path("pid"))))
         folder = os.path.join(repo, "routes", "route2_manual_20261031")
         self.route = Route(os.path.join(folder, self.route_name + "_waypoints.json"))
+        self.bump_stations = locate_route_bumps(self.route)
         mask_path = os.path.join(folder, "common_drivable_mask.yaml")
         meta = self.route.metadata
         if meta.get("reference_point") != REFERENCE_CHAIR_CENTRE:
@@ -513,6 +562,7 @@ class Safety:
                     if self.replan_candidate is None:
                         return
                     self.route = self.replan_candidate
+                    self.bump_stations = locate_route_bumps(self.route)
                     self.station = 0.0
                     self.route_version = self.replan_id
                     self.replan_mode = "ACTIVE"
@@ -533,13 +583,17 @@ class Safety:
         if not self.enable_replan or self.route_version != "original":
             return
         if self.replan_mode in ("PLANNING", "STAGING", "FAILED"):
-            # Only a consistently CLEAR original route permits cancellation.
-            # Never cancel on one moving/static flip or a SLOW sample.
+            # Cancel a failed/pending detour when the ORIGINAL path has no
+            # blocking obstacle for 0.6s. Curvature/CTE/bump/goal SLOW is
+            # normal and must not strand the wheelchair in REPLAN_HOLD.
+            # STOP, stale perception, or any obstacle still in the path
+            # resets this confirmation interval (no single-frame release).
             fresh = (isinstance(objects, dict) and objects.get("status") == "OK"
                      and objects.get("frame") == "chair_centre"
                      and objects.get("stamp") is not None
                      and now - float(objects["stamp"]) <= OBSTACLE_TIMEOUT_S)
-            if state == "CLEAR" and fresh and info.get("obstacle_distance_m") is None:
+            if (state in ("CLEAR", "SLOW") and fresh
+                    and info.get("obstacle_distance_m") is None):
                 if self.replan_clear_since is None:
                     self.replan_clear_since = now
                 if now - self.replan_clear_since >= 0.6:
@@ -580,7 +634,8 @@ class Safety:
                 "current_mask_clearance_m": None, "predicted_mask_clearance_m": None,
                 "cte_limit_mps": None, "curve_limit_mps": None,
                 "obstacle_limit_mps": None, "preview_curvature_inv_m": None,
-                "goal_remaining_m": None, "goal_limit_mps": None}
+                "goal_remaining_m": None, "goal_limit_mps": None,
+                "bump_limit_mps": None, "bump_stations_m": None}
         if pose is None:
             return "STOP", 0.0, "POSE_MISSING", info
         if received is None or now - received > OBSTACLE_TIMEOUT_S:
@@ -626,6 +681,9 @@ class Safety:
         cte_cap, curve_cap, curvature = speed_caps(self.route, station, use_cte)
         goal_remaining = max(0.0, self.route.length - station)
         goal_cap = goal_speed_cap(goal_remaining)
+        bump_cap = bump_speed_cap(station, self.bump_stations)
+        info["bump_limit_mps"] = bump_cap
+        info["bump_stations_m"] = self.bump_stations
         info["goal_remaining_m"] = goal_remaining
         info["goal_limit_mps"] = goal_cap
         info["cte_limit_mps"] = cte_cap
@@ -683,7 +741,7 @@ class Safety:
             item_cap, item_stop, item_reason = obstacle_restriction(
                 distance, item.get("motion"), moving_away,
                 MAX_SPEED_MPS, OBSTACLE_SLOW_MIN_MPS,
-                static_detour_enabled=self.enable_replan,  # preserve prior 2m static STOP
+                static_detour_enabled=self.enable_replan,  # static STOP from 2.5m with replan
                 receding_enabled=self.enable_receding)
             if item_reason == "RECEDING_IGNORED":
                 receding_ignored.append(item.get("id"))
@@ -708,12 +766,14 @@ class Safety:
             info["obstacle_id"] = info["static_candidate_id"]
             info["obstacle_distance_m"] = early_profile_gaps[info["static_candidate_id"]]
             return "STOP", 0., "STATIC_REPLAN_EARLY", info
-        cap = min(MAX_SPEED_MPS, cte_cap, curve_cap, obstacle_cap, goal_cap)
+        cap = min(MAX_SPEED_MPS, cte_cap, curve_cap, obstacle_cap, goal_cap, bump_cap)
         if cap < MAX_SPEED_MPS - SLOW_THRESHOLD_MPS:
             if cap == obstacle_cap:
                 reason = "PATH_OBSTACLE"
             elif cap == cte_cap:
                 reason = "CTE_LIMIT"
+            elif cap == bump_cap:
+                reason = "BUMP_LIMIT"
             elif cap == curve_cap:
                 reason = "CURVATURE_LIMIT"
             else:

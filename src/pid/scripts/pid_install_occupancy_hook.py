@@ -11,9 +11,34 @@ from pathlib import Path
 MARK = "# PID_OCCUPANCY_HOOK_V1"
 
 
+def guard_snapshot_calls(source):
+    """Keep legacy __new__-constructed test fixtures usable without ROS Service.
+
+    Production nodes always construct SnapshotService in __init__. This guard
+    only skips the optional service when that constructor was bypassed.
+    """
+    clear_old = '        self.pid_occupancy_snapshot.clear()'
+    clear_new = ('        if hasattr(self, "pid_occupancy_snapshot"):\n'
+                 '            self.pid_occupancy_snapshot.clear()')
+    update_old = '''        self.pid_occupancy_snapshot.update(
+            newest_stamp, map_pose @ body_T_lidar,
+            [(i if not tracks else int(tracks[i].id), cluster)
+             for i, cluster in enumerate(clusters)])'''
+    update_new = '''        if hasattr(self, "pid_occupancy_snapshot"):
+            self.pid_occupancy_snapshot.update(
+                newest_stamp, map_pose @ body_T_lidar,
+                [(i if not tracks else int(tracks[i].id), cluster)
+                 for i, cluster in enumerate(clusters)])'''
+    if clear_old in source:
+        source = source.replace(clear_old, clear_new, 1)
+    if update_old in source:
+        source = source.replace(update_old, update_new, 1)
+    return source
+
+
 def patch(source):
     if MARK in source:
-        return source
+        return guard_snapshot_calls(source)
     replacements = [
         ("from cloud_points import (COLLISION_MAX_HEIGHT_M,",
          """# PID occupied cells use a separate service; legacy summary unchanged.
@@ -43,7 +68,7 @@ from cloud_points import (COLLISION_MAX_HEIGHT_M,"""),
         if count != 1:
             raise RuntimeError("Patch rejected: expected exactly one anchor (%d): %s" % (count, old))
         result = result.replace(old, new, 1)
-    return result
+    return guard_snapshot_calls(result)
 
 
 def main():

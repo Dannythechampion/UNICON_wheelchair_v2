@@ -1,12 +1,12 @@
 """ROS-independent obstacle-specific forward-path policy.
 
-A static obstacle stops at the beginning of the existing 2 m slow corridor.
+A static obstacle stops at the beginning of the existing 2.5 m slow corridor.
 A *confirmed receding* moving object is not a path-speed restriction in the
-1-2 m band, and causes a SLOW (not CLEAR) inside 1 m. A collision-near object
+1.5-2.5 m band, and causes a SLOW (not CLEAR) inside 1.5 m. A collision-near object
 is never exempt from the independent footprint emergency stop.
 """
-FRONT_STOP_M = 1.0
-FRONT_SLOW_M = 2.0
+FRONT_STOP_M = 1.5
+FRONT_SLOW_M = 2.5
 
 
 def obstacle_restriction(distance, motion, confirmed_receding, max_speed,

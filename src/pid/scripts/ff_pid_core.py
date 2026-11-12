@@ -17,10 +17,14 @@ import numpy as np
 # 아래 값은 초기 실험용이며 실차에서 검증·튜닝된 최종값이 아닙니다.
 KP = 1.00                        # P 게인: 예상 CTE에 비례한 조향 보정
 KD = 1.0                        # D 게인: 예상 CTE 변화율에 따른 조향 보정
-KI = 0.00                        # I 게인: 사용하지 않음
+KI = 0.00                        # I 게인: 기본 비활성화 (적분 구조만 준비)
+I_LIMIT_M_S = 0.50               # 적분 누적값 상한 [m*s]
+I_LEAK_TAU_S = 8.00              # 적분값 지수 감쇠 시정수 [s]
+I_MAX_CTE_M = 0.30               # 큰 횡오차/외란 중에는 적분 누적 금지 [m]
+I_MAX_SAMPLE_DT_S = 0.50         # 너무 오래된 pose 간격을 적분하지 않음 [s]
 FF_GAIN = 1.00                   # 경로 곡률 FF 보정 배율
 FF_PREVIEW_WAYPOINTS = 5         # 예측 위치의 최근접 Waypoint에서 앞쪽으로 볼 칸 수
-YAW_GAIN = 0.50                  # 예측 Heading Error 보정 게인 [1/s]
+YAW_GAIN = 1.00                  # 예측 Heading Error 보정 게인 [1/s]
 YAW_DEADZONE_DEG = 3.0           # 예측 Heading Error 연속형 데드존 [deg]
 YAW_CURVATURE_SCALE_M = 10.0     # 1/(1+scale*abs(kappa)) 커브별 Yaw 보정 약화 [m]
 MAX_V_MPS = 0.80                 # 휠체어 최대 전진 속도 [m/s]
@@ -31,7 +35,7 @@ MAX_WHEEL_MPS = 1.00             # 좌·우 각각의 바퀴 최대 구동 속�
 # 곡률·CTE 속도 상한과 SLOW 속도 계획은 Safety에서 수행합니다.
 CTE_DEADZONE_M = 0.05           # 작은 횡방향 오차를 무시하는 구간 [m]
 D_DEADZONE_MPS = 0.02            # D항 입력(CTE 변화율) 데드존 [m/s]
-D_CLAMP_CURVATURE_INV_M = 0.30     # D항 곡률 제한 [1/m]; 최종 각속도 기여는 v를 곱함
+D_CLAMP_CURVATURE_INV_M = 0.15     # D항 곡률 제한 [1/m]; 최종 각속도 기여는 v를 곱함
 LINEAR_ACCEL_LIMIT_MPS2 = 0.80   # RUNNING 선가속도 제한 [m/s²]; 일반 감속은 제한 없음
 ANGULAR_ACCEL_LIMIT_RAD_S2 = 2.00  # RUNNING 각속도 변화율 제한 [rad/s²]
 COMMAND_LIMIT_MAX_DT_S = 0.05    # 제어 루프 지연 시 한 번의 큰 명령 점프 방지
@@ -365,7 +369,9 @@ class FFPD:
             self.derivative = deadzone(self.derivative_raw, self.d_deadzone)
             derivative_updated = True
         self.prev_error = error
-        self.integral = float(np.clip(self.integral + error * dt, -0.5, 0.5))
+        # I is deliberately NOT accumulated here. FFNode commits the integral
+        # only after both the wheel-feasibility and final slew limiters are known.
+        # KI=0 keeps this state exactly zero and cannot change normal steering.
 
         # FF는 예측 위치의 최근접 Waypoint에서 정확히 N칸 앞의 곡률을 사용합니다.
         ff_waypoint_index = min(
@@ -427,6 +433,7 @@ class FFPD:
                 "ff_preview_waypoints": self.ff_preview_waypoints,
                 "ff_curvature_inv_m": k_ff,
                 "speed_limit_mps": speed_limit_mps,
+                "integral_m_s": self.integral,
                 "ff": v * self.ff_gain * k_ff, "p": v * k_p, "i": v * k_i,
                 "d": v * k_d, "yaw": yaw_rate,
                 "k_cmd": k_cmd, "k_ff": k_ff, "k_p": k_p, "k_d": k_d,
@@ -437,3 +444,49 @@ class FFPD:
                 "steering_state": steering_state, "motion_policy": motion_policy,
                 "pitch_deg": float(pitch_deg),
                 "vl": vl, "vr": vr, "predicted_pose": predicted}
+
+    def update_integral_after_command(self, result, applied_w, dt):
+        """Commit a leaky, saturation-aware I state AFTER the final command limiter.
+
+        - Integrate only on fresh pose observations (the same samples as D).
+        - Never integrate while disabled, when the CTE is a large transient,
+          or when the applied steering is clipped in the integral's direction.
+        - Let existing integral memory decay even when integration is blocked.
+        - Reset on stop/restart/route change via the existing FFPD.reset() calls.
+
+        The latest I state affects the NEXT cycle's steering output. It never
+        modifies the already published command. KI=0 is an exact no-op.
+        """
+        if self.ki == 0.0:
+            self.integral = 0.0
+            return {"i_integral_after_update_m_s": 0.0, "i_update": "DISABLED"}
+        if not (0.0 < dt < 0.5 and math.isfinite(float(applied_w))):
+            raise ValueError("invalid I feedback timestep/command")
+        previous = self.integral
+        self.integral *= math.exp(-dt / I_LEAK_TAU_S)
+        sample_dt = result.get("d_sample_dt_s")
+        if not result.get("d_recomputed") or sample_dt is None:
+            reason = "DECAY_ONLY"
+        elif not (math.isfinite(float(sample_dt))
+                  and 0.0 < sample_dt <= I_MAX_SAMPLE_DT_S):
+            reason = "INVALID_SAMPLE_INTERVAL"
+        elif not math.isfinite(float(result["predicted_cte"])):
+            reason = "INVALID_CTE"
+        elif abs(float(result["predicted_cte"])) > I_MAX_CTE_M:
+            reason = "LARGE_CTE"
+        else:
+            error = float(result["cte_after_deadzone_m"])
+            # A negative CTE produces positive I yaw, and vice versa.
+            # If the requested yaw is clipped and the candidate I correction
+            # would push further into that clip, freeze I accumulation.
+            clipping = float(result["requested_w_rad_s"]) - float(applied_w)
+            if clipping * (-error) > 1e-8:
+                reason = "ANTI_WINDUP"
+            else:
+                self.integral = float(np.clip(
+                    self.integral + error * sample_dt,
+                    -I_LIMIT_M_S, I_LIMIT_M_S))
+                reason = "INTEGRATED"
+        return {"i_integral_after_update_m_s": self.integral,
+                "i_integral_before_update_m_s": previous,
+                "i_update": reason}

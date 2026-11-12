@@ -223,14 +223,37 @@ PY
   fi
 fi
 
+# A session-specific marker lets an external pid_stop.sh release this shell
+# even if ROS Master still reports a stale /ff_pid registration.
+DRIVE_SESSION_ID="$(date +%s%N)_$"
+DRIVE_SESSION_RECORD="$RUN_DIR/active_drive_session"
+DRIVE_STOP_MARKER="$RUN_DIR/drive_stop_verified_$DRIVE_SESSION_ID"
+printf '%s\n' "$DRIVE_SESSION_ID" > "$DRIVE_SESSION_RECORD.tmp.$"
+mv -f "$DRIVE_SESSION_RECORD.tmp.$" "$DRIVE_SESSION_RECORD"
 ARMED=1
 safe_stop_on_exit() {
   local code=$?
   trap - EXIT INT TERM HUP
   if [[ "${ARMED:-0}" == 1 ]]; then
     printf '\n[INFO] 주행 터미널 종료: FF-PD 정지 요청\n' >&2
-    bash "$STOP" || printf '[WARN] 자동 정지 확인 실패. 실제 휠체어 정지를 확인하세요.\n' >&2
+    if [[ -f "${DRIVE_STOP_MARKER:-}" ]]; then
+      printf '[OK] 다른 터미널 또는 앱의 주행 종료가 확인됐습니다. 감시를 종료합니다.\n' >&2
+      emit_drive_event STOP_VERIFIED STOP_SCRIPT_OK "외부 종료 명령으로 MANUAL 정차 및 주행 프로세스 정리 완료"
+    elif bash "$STOP"; then
+      emit_drive_event STOP_VERIFIED STOP_SCRIPT_OK "MANUAL 전환과 정차 및 주행 프로세스 정리가 확인됐습니다."
+    else
+      emit_drive_event STOP_UNVERIFIED STOP_SCRIPT_FAILED "주행 정지 확인 실패: 실제 바퀴 정지와 MANUAL 모드를 확인하세요."
+      printf '[WARN] 자동 정지 확인 실패. 실제 휠체어 정지를 확인하세요.\n' >&2
+      [[ "$code" != 0 ]] || code=2
+    fi
   fi
+  if [[ -n "${DRIVE_SESSION_RECORD:-}" && -f "$DRIVE_SESSION_RECORD" ]]; then
+    IFS= read -r current_session < "$DRIVE_SESSION_RECORD" || true
+    if [[ "$current_session" == "${DRIVE_SESSION_ID:-}" ]]; then
+      rm -f "$DRIVE_SESSION_RECORD"
+    fi
+  fi
+  [[ -z "${DRIVE_STOP_MARKER:-}" ]] || rm -f "$DRIVE_STOP_MARKER"
   exit "$code"
 }
 trap safe_stop_on_exit EXIT
@@ -256,4 +279,4 @@ else
 fi
 printf '[INFO] 이 터미널의 Ctrl+C도 정지 요청을 보냅니다.\n'
 # Only state transitions are printed now; detailed telemetry is reserved for later.
-python3 "$CHECK" watch --route "$ROUTE"
+python3 "$CHECK" watch --route "$ROUTE" --stop-marker "$DRIVE_STOP_MARKER"

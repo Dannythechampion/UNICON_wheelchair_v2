@@ -29,7 +29,10 @@ AUTO_INIT_GLOBAL_ONLY=false
 VN_IMU="${VN_IMU:-0}"
 REGISTRATION_BACKEND="${REGISTRATION_BACKEND:-fast_vgicp_cuda}"
 RVIZ="${RVIZ:-false}"
-AUTO_INIT_TIMEOUT_S="${AUTO_INIT_TIMEOUT_S:-180}"
+AUTO_INIT_TIMEOUT_S="${AUTO_INIT_TIMEOUT_S:-60}"
+# Snapshot the user-selected READY timeout before route2_intern_env.sh
+# resets this variable to its historical 240-second default.
+READY_INIT_TIMEOUT_S="$AUTO_INIT_TIMEOUT_S"
 FASTLIO_HEALTH_S="${FASTLIO_HEALTH_S:-8.0}"
 PERCEPTION_PROFILE="legacy_geometric"
 
@@ -90,6 +93,8 @@ require_file "$REPO_ROOT/tools/perception_profile.sh"
 # shellcheck disable=SC1090
 export REPO="$REPO_ROOT"
 source "$REPO_ROOT/tools/route2_intern_env.sh" || fail "route2 asset selection failed"
+# READY owns its initialization deadline. Keep CLI/env override and 60s default.
+AUTO_INIT_TIMEOUT_S="$READY_INIT_TIMEOUT_S"
 INIT_ROUTE="${INIT_ROUTE:-$AUTO_INIT_ROUTE}"
 # shellcheck disable=SC1090
 source "$REPO_ROOT/tools/perception_profile.sh"

@@ -556,7 +556,7 @@ def main():
                 # Coarse/refined support keeps obviously wrong distant sites
                 # out of the expensive GICP verifier.
                 min_site_score = (
-                    0.55 if candidate.source == "known_site:D5" else 0.65
+                    0.55 if candidate.source in ("known_site:D4", "known_site:D5") else 0.65
                 )
                 if candidate.score is None or candidate.score < min_site_score:
                     rospy.loginfo("skip %s: score %s below %.2f",

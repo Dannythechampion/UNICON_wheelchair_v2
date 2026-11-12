@@ -416,7 +416,8 @@ class FFNode:
                 # Perception faults, bad geometry and mask boundary faults require
                 # an explicit new /ff_pid/start after the fault is resolved.
                 can_resume = data.get("reason") in (
-                    "PATH_OBSTACLE", "VERY_CLOSE_OBJECT", "RELEASE_CONFIRM", "REPLAN_HOLD")
+                    "PATH_OBSTACLE", "VERY_CLOSE_OBJECT", "STATIC_REPLAN_EARLY",
+                    "RELEASE_CONFIRM", "REPLAN_HOLD")
                 if self.enabled:
                     self.resume_after_obstacle = can_resume
                     self.obstacle_stopped = can_resume
@@ -637,6 +638,11 @@ class FFNode:
                     self.core.wheel_track, self.core.min_wheel, self.core.max_wheel,
                     diagnostics=limiter_diagnostics)
                 result.update(limiter_diagnostics)
+                # Update leaky I memory only after BOTH steering feasibility and
+                # final wheel/slew-rate limiting have been applied. This state
+                # is used by the next control cycle; KI=0 is an exact no-op.
+                result.update(self.core.update_integral_after_command(
+                    result, command_w, dt))
                 # Capture both control stages and effective tunings in /ff_pid/status.
                 # pid_ready_bag.sh already records this topic at controller rate.
                 result["route"] = self.route_name

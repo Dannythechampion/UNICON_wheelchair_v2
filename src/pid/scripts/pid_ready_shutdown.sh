@@ -139,4 +139,15 @@ else
   warn 'Cleanup incomplete. Check PIDs and bag before restarting.'
 fi
 warn 'MANUAL command is not physical stop confirmation.'
+
+# Background-only ROS bag postprocessing. Does not alter READY shutdown result,
+# talk to ROS Master, command the motor or remove originals.
+# The organizer independently skips sessions whose recording/processes are alive.
+AUTO_ORGANIZER="$S/pid_rosbag_auto.py"
+if [[ -f "$AUTO_ORGANIZER" && "${PID_ROSBAG_AUTO:-1}" == 1 ]]; then
+  setsid nohup bash -c 'source "$1"; exec python3 "$2"' \
+    _ "$ROS_SETUP" "$AUTO_ORGANIZER" \
+    >"$RUN_DIR/rosbag_auto.log" 2>&1 </dev/null 9>&- &
+  info "ROS bag organization queued in background; log: $RUN_DIR/rosbag_auto.log"
+fi
 exit "$failed"

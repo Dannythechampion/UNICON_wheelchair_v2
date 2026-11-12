@@ -4,6 +4,7 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 ROS_SETUP="${ROS_SETUP:-/opt/ros/noetic/setup.bash}"
 CHECK="$SCRIPT_DIR/pid_drive_check.py"
+STATE_DIR="${PID_READY_STATE_DIR:-$HOME/.local/state/pid_ready}"
 msg() { printf '%s\n' "$*"; }
 fail() { printf '[FAIL] %s\n' "$*" >&2; exit 1; }
 [[ "$#" == 0 ]] || fail '사용법: bash src/pid/scripts/pid_stop.sh'
@@ -15,6 +16,11 @@ source "$ROS_SETUP"
 set -u
 : "${ROS_MASTER_URI:=http://127.0.0.1:11311}"
 export ROS_MASTER_URI
+# Serialize all STOP callers (app, other terminal, and DRIVE EXIT trap).
+# Repeated calls recheck stopped+MANUAL instead of killing unrelated processes.
+mkdir -p "$STATE_DIR"
+exec 9>"$STATE_DIR/drive_stop.lock"
+flock -x 9
 timeout 4 rosparam list >/dev/null 2>&1 || msg '[WARN] ROS Master unreachable; physical stop cannot be verified. Attempting recorded-process cleanup.'
 
 node_alive() { timeout 3 rosnode list 2>/dev/null | grep -Fx /ff_pid >/dev/null; }
@@ -37,7 +43,6 @@ if node_alive; then
 fi
 timeout 5 rosnode kill /pid_safety >/dev/null 2>&1 || true
 timeout 5 rosnode kill /pid_astar_planner >/dev/null 2>&1 || true
-STATE_DIR="${PID_READY_STATE_DIR:-$HOME/.local/state/pid_ready}"
 if [[ -s "$STATE_DIR/latest_run_dir" ]]; then
   IFS= read -r RUN_DIR < "$STATE_DIR/latest_run_dir"
   for item in ff_pid.pid pid_safety.pid pid_astar_planner.pid; do
@@ -54,12 +59,40 @@ if [[ -s "$STATE_DIR/latest_run_dir" ]]; then
     fi
   done
 fi
-if node_alive; then
-  msg '[WARN] FF-PD node remains registered; inspect its logged process.'
+# Confirm the whole DRIVE stack has exited, not only /ff_pid.
+sleep 0.5
+remaining_nodes="$(timeout 5 rosnode list 2>/dev/null | grep -Ex '/ff_pid|/pid_safety|/pid_astar_planner' || true)"
+if [[ -n "$remaining_nodes" ]]; then
+  msg "[WARN] DRIVE nodes still registered: $remaining_nodes"
   exit 1
+fi
+if [[ -s "$STATE_DIR/latest_run_dir" ]]; then
+  IFS= read -r RUN_DIR < "$STATE_DIR/latest_run_dir"
+  for item in ff_pid.pid pid_safety.pid pid_astar_planner.pid; do
+    [[ -s "$RUN_DIR/$item" ]] || continue
+    IFS= read -r pid < "$RUN_DIR/$item"
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    state="$(ps -o stat= -p "$pid" 2>/dev/null | tr -d '[:space:]' || true)"
+    [[ -n "$state" && "$state" != Z* ]] || continue
+    cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+    if [[ ( "$item" == ff_pid.pid && "$cmd" == *ff_pid_node.py* ) ||
+          ( "$item" == pid_safety.pid && "$cmd" == *pid_safety.py* ) ||
+          ( "$item" == pid_astar_planner.pid && "$cmd" == *pid_astar_planner.py* ) ]]; then
+      msg "[WARN] DRIVE process still running: $item (PID $pid)"
+      exit 1
+    fi
+  done
 fi
 if [[ "$VERIFIED" != 1 ]]; then
   msg '[WARN] FF-PD process cleanup requested, but physical stop is NOT verified.'
   exit 2
+fi
+# Notify the matching DRIVE shell only after verified physical STOP + cleanup.
+# This is not a motor-stop mechanism; it only releases the monitoring terminal.
+if [[ -n "${RUN_DIR:-}" && -s "$RUN_DIR/active_drive_session" ]]; then
+  IFS= read -r drive_session < "$RUN_DIR/active_drive_session" || true
+  if [[ "$drive_session" =~ ^[0-9]+_[0-9]+$ ]]; then
+    : > "$RUN_DIR/drive_stop_verified_$drive_session"
+  fi
 fi
 msg '[OK] FF-PD and Safety ended. READY sensor/GICP/bag remain running.'
