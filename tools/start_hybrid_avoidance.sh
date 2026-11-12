@@ -136,7 +136,17 @@ case "$SMITH_RESIDUAL" in
   imu|wheel|off) ;;
   *) fail "SMITH_RESIDUAL must be imu, wheel or off, got '$SMITH_RESIDUAL'" ;;
 esac
-export LAUNCH_FLOOR_MPS STRAIGHT_LAUNCH DWA_CURV_MAX DWA_YAW_ACCEL SMITH_RESIDUAL
+TIP_NO_REVERSE="${TIP_NO_REVERSE:-true}"
+case "$TIP_NO_REVERSE" in
+  true|false) ;;
+  *) fail "TIP_NO_REVERSE must be true or false, got '$TIP_NO_REVERSE'" ;;
+esac
+TIP_RESUME="${TIP_RESUME:-true}"
+case "$TIP_RESUME" in
+  true|false) ;;
+  *) fail "TIP_RESUME must be true or false, got '$TIP_RESUME'" ;;
+esac
+export LAUNCH_FLOOR_MPS STRAIGHT_LAUNCH DWA_CURV_MAX DWA_YAW_ACCEL SMITH_RESIDUAL TIP_NO_REVERSE TIP_RESUME
 VN_IMU="${VN_IMU:-0}"
 case "$VN_IMU" in 0) BODY_FRAME_PROFILE=builtin ;; 1) BODY_FRAME_PROFILE=vn100 ;;
   *) fail "VN_IMU must be 0 or 1" ;; esac
@@ -411,6 +421,9 @@ setsid nohup rosrun static_livox_localization tip_guard.py \
   __name:=tip_guard \
   /cmd_vel_gated:=/cmd_vel_terrain_safe \
   _launch_floor_mps:="$LAUNCH_FLOOR_MPS" \
+  _no_reverse:="$TIP_NO_REVERSE" \
+  _resume_from_wheels:="$TIP_RESUME" \
+  _wheel_separation_m:="${BASE_WHEEL_SEPARATION_M:-0.54}" \
   > "$LOG/live_tipguard.log" 2>&1 < /dev/null &
 
 for topic in /perception/hybrid_status /semantic_safety/status \

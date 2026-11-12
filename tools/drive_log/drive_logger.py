@@ -135,7 +135,12 @@ def on_sem(m):
     try: S["sem"] = json.loads(m.data)
     except Exception: pass
 
-def on_tip(m): S["tip"] = m.data
+def on_tip(m):
+    S["tip"] = m.data
+    # tip_guard's no-reverse clamp (since 2026-11-11), at most once a second.
+    if "W_CLAMPED" in m.data and time.time() - S.get("clamp_ev", 0.0) > 1.0:
+        ev("TIP W_CLAMPED %s  @%s" % (m.data.split("W_CLAMPED", 1)[1].strip(), fmt_pose()))
+        S["clamp_ev"] = time.time()
 
 def on_wheel(m):
     d = m.data
@@ -278,7 +283,9 @@ def main():
     ev("logger start: route %s  out %s" % (os.path.basename(route_file), OUT))
     # Base and final-stage switches, read once: they are fixed at stack start.
     for name in ("/wheel_cmd/turn_boost", "/wheel_cmd/wheel_separation_m",
-                 "/tip_guard/launch_floor_mps", "/waypoint_follower/launch_floor_mps",
+                 "/tip_guard/launch_floor_mps", "/tip_guard/no_reverse",
+                 "/tip_guard/resume_from_wheels",
+                 "/waypoint_follower/launch_floor_mps",
                  "/waypoint_follower/straight_launch", "/waypoint_follower/curvature_max",
                  "/waypoint_follower/yaw_accel", "/waypoint_follower/smith_residual",
                  "/waypoint_follower/smith_residual_tau_s", "/waypoint_follower/latency_mode"):

@@ -272,6 +272,23 @@ case "$SMITH_RESIDUAL" in
      exit 65 ;;
 esac
 echo "  smith model error: $SMITH_RESIDUAL (applied under 0.3 m/s, none over 0.5)"
+# Final stage: never command the inner wheel backwards (tip_guard_policy.
+# no_reverse_yaw, 2026-11-11: the 11-09 crest spins). true (default) | false.
+TIP_NO_REVERSE="${TIP_NO_REVERSE:-true}"
+case "$TIP_NO_REVERSE" in
+  true|false) ;;
+  *) echo "ERROR: TIP_NO_REVERSE must be true or false, got '$TIP_NO_REVERSE'" >&2
+     exit 65 ;;
+esac
+# Final stage: after a zero, resume from the wheels' measured speed instead
+# of ramping up from 0 under a still-rolling chair (resume_speed). true|false.
+TIP_RESUME="${TIP_RESUME:-true}"
+case "$TIP_RESUME" in
+  true|false) ;;
+  *) echo "ERROR: TIP_RESUME must be true or false, got '$TIP_RESUME'" >&2
+     exit 65 ;;
+esac
+echo "  tip_guard no-reverse yaw: $TIP_NO_REVERSE, resume from wheels: $TIP_RESUME"
 # OpenBLAS sizes its thread pool to the core count and then SPIN-WAITS
 # those threads between calls. Every numpy operation in the control-loop
 # nodes is tiny - a 25-step horizon, a few hundred band stations - so the
@@ -737,6 +754,9 @@ setsid nohup rosrun static_livox_localization stop_watchdog.py \
   > "$LOG/live_stopwatchdog.log" 2>&1 < /dev/null &
 setsid nohup rosrun static_livox_localization tip_guard.py \
   _launch_floor_mps:="$LAUNCH_FLOOR_MPS" \
+  _no_reverse:="$TIP_NO_REVERSE" \
+  _resume_from_wheels:="$TIP_RESUME" \
+  _wheel_separation_m:="$BASE_WHEEL_SEPARATION_M" \
   > "$LOG/live_tipguard.log" 2>&1 < /dev/null &
 # The follower steers around what this node reports as parked and waits for
 # what it reports as moving, so it starts BEFORE the follower and the follower
