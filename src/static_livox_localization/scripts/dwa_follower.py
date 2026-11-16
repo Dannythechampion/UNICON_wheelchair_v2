@@ -128,6 +128,21 @@ YAW_ACCEL_RPS2 = 0.8
 SMITH_RESIDUAL_MODES = ("off", "wheel", "imu")
 SMITH_RESIDUAL_DEFAULT = "off"
 SMITH_RESIDUAL_TAU_ON_S = 0.3
+
+
+def smith_residual_mode(value):
+    """The ~smith_residual parameter as one of SMITH_RESIDUAL_MODES.
+
+    rosrun's _name:=value goes through YAML 1.1, which reads a bare `off`
+    as the boolean False: the 11-16 deploy died at start-up on exactly the
+    default the launch scripts pass. False is therefore "off". True has no
+    meaning (on with which source?) and is rejected with everything else.
+    """
+    if value is False:
+        return "off"
+    if isinstance(value, bool):
+        return str(value)
+    return str(value).strip().lower()
 SMITH_IMU_TOPIC = "/livox/imu"
 SMITH_IMU_FRESH_S = 0.2
 RESIDUAL_FULL_BELOW_MPS = 0.30
@@ -300,7 +315,7 @@ class DwaFollower(WaypointFollower):
         # The model-error term (actuation_lag), measured where the model is
         # wrong: low speed, against the IMU's yaw rate (see
         # SMITH_RESIDUAL_MODES).
-        self.smith_residual = str(rospy.get_param(
+        self.smith_residual = smith_residual_mode(rospy.get_param(
             "~smith_residual", SMITH_RESIDUAL_DEFAULT))
         if self.smith_residual not in SMITH_RESIDUAL_MODES:
             raise ValueError("~smith_residual must be one of %s, got %r" % (
