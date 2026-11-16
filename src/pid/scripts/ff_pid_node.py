@@ -87,6 +87,7 @@ MAX_POSE_AGE_S = 0.50           # 허용 위치 데이터 수신 지연 [s]
 MAX_WHEEL_AGE_S = 0.35          # 허용 바퀴 상태 수신 지연 [s]
 MAX_DIAG_AGE_S = 5.0            # 허용 GICP 진단 수신 지연 [s]
 CONTROL_PERIOD_S = 0.02        # ROS 제어 주기 [s] (50Hz)
+OBSTACLE_RESUME_INITIAL_V_MPS = 0.30  # Automatic obstacle-resume first command only
 PEER_CHECK_PERIOD_S = 1.0      # /cmd_vel 중복 발행자 확인 주기 [s]
 # ================================================================
 
@@ -196,6 +197,7 @@ class FFNode:
         self.policy_received = None
         self.obstacle_stopped = False
         self.resume_after_obstacle = False
+        self.obstacle_resume_launch_pending = False
         self.wheel = None
         self.wheel_pair = None
         self.wheel_received = None
@@ -435,6 +437,7 @@ class FFNode:
                     self.enabled = True
                     self.obstacle_stopped = False
                     self.resume_after_obstacle = False
+                    self.obstacle_resume_launch_pending = True
                     self.publish_status("RUNNING")
 
     def on_wheel(self, msg):
@@ -524,6 +527,7 @@ class FFNode:
         self.last_tick = None
         self.last_command_v = 0.0
         self.last_command_w = 0.0
+        self.obstacle_resume_launch_pending = False
         self.stop()
         self.publish_status(reason)
 
@@ -554,6 +558,7 @@ class FFNode:
             self.last_command_w = 0.0
             self.resume_after_obstacle = False
             self.obstacle_stopped = False
+            self.obstacle_resume_launch_pending = False
             self.enabled = True
             self.publish_status("RUNNING")
             return SetBoolResponse(True, "FF-PD STARTED")
@@ -570,6 +575,7 @@ class FFNode:
                     self.last_tick = None
                     self.last_command_v = 0.0
                     self.last_command_w = 0.0
+                    self.obstacle_resume_launch_pending = False
                     self.publish_status("COMPETING_CMD_VEL_PUBLISHER")
                     rospy.logerr("FF-PD command conflict: %s", others)
                 # 다른 발행자가 있으면 0속도 메시지조차 경쟁 발행하지 않습니다.
@@ -596,6 +602,7 @@ class FFNode:
                         self.enabled = True
                         self.obstacle_stopped = False
                         self.resume_after_obstacle = False
+                        self.obstacle_resume_launch_pending = True
                         self.publish_status("RUNNING")
                 if not self.enabled:
                     self.stop()
@@ -636,7 +643,9 @@ class FFNode:
                     self.last_command_v, self.last_command_w,
                     result["v"], result["w"], dt,
                     self.core.wheel_track, self.core.min_wheel, self.core.max_wheel,
-                    diagnostics=limiter_diagnostics)
+                    diagnostics=limiter_diagnostics,
+                    launch_floor_mps=(OBSTACLE_RESUME_INITIAL_V_MPS
+                                      if self.obstacle_resume_launch_pending else 0.0))
                 result.update(limiter_diagnostics)
                 # Update leaky I memory only after BOTH steering feasibility and
                 # final wheel/slew-rate limiting have been applied. This state
@@ -668,6 +677,7 @@ class FFNode:
                     "d_clamp_curvature_inv_m": self.core.d_limit,
                     "max_v_mps": self.core.max_v, "max_w_rad_s": self.core.max_w,
                     "linear_accel_mps2": core_settings.LINEAR_ACCEL_LIMIT_MPS2,
+                    "obstacle_resume_initial_v_mps": OBSTACLE_RESUME_INITIAL_V_MPS,
                     "angular_accel_rad_s2": core_settings.ANGULAR_ACCEL_LIMIT_RAD_S2,
                     "min_wheel_mps": self.core.min_wheel,
                     "max_wheel_mps": self.core.max_wheel,
@@ -676,6 +686,7 @@ class FFNode:
                 command.linear.x = command_v
                 command.angular.z = command_w
                 self.pub.publish(command)
+                self.obstacle_resume_launch_pending = False
                 self.last_command_v = command_v
                 self.last_command_w = command_w
                 self.core.predictor.record(now, command_v, command_w)

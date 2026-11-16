@@ -63,24 +63,28 @@ def limit_running_command(previous_v, previous_w, target_v, target_w, dt,
                           wheel_track, min_wheel, max_wheel,
                           linear_accel=LINEAR_ACCEL_LIMIT_MPS2,
                           angular_accel=ANGULAR_ACCEL_LIMIT_RAD_S2,
-                          diagnostics=None):
+                          diagnostics=None, launch_floor_mps=0.0):
     """Slew-limit normal RUNNING commands only; fault/STOP bypasses this function.
 
     Linear acceleration and angular velocity changes are limited. Normal
     linear deceleration is immediate, as requested. Wheel-speed feasibility
     always takes priority over angular slew rate, including during deceleration.
+    An optional one-shot launch floor skips the near-zero command dead zone
+    on verified obstacle auto-resume, but never exceeds the Safety speed ceiling.
     """
     values = (previous_v, previous_w, target_v, target_w, dt, wheel_track,
-              min_wheel, max_wheel, linear_accel, angular_accel)
+              min_wheel, max_wheel, linear_accel, angular_accel, launch_floor_mps)
     if not all(math.isfinite(float(x)) for x in values):
         raise ValueError("non-finite command limiter input")
     if not (0 < dt < 0.5 and linear_accel > 0 and angular_accel > 0
             and wheel_track > 0 and 0 <= min_wheel < max_wheel
-            and 0 <= previous_v <= max_wheel and 0 <= target_v <= max_wheel):
+            and 0 <= previous_v <= max_wheel and 0 <= target_v <= max_wheel
+            and 0 <= launch_floor_mps <= max_wheel):
         raise ValueError("invalid command limiter input")
     step = min(dt, COMMAND_LIMIT_MAX_DT_S)
     if target_v >= previous_v:
-        v = min(target_v, previous_v + linear_accel * step)
+        v = min(target_v, max(previous_v + linear_accel * step,
+                              launch_floor_mps))
     else:
         v = target_v  # No ordinary deceleration ramp.
 
@@ -106,6 +110,10 @@ def limit_running_command(previous_v, previous_w, target_v, target_w, dt,
             "limiter_w_after_wheel_clip_rad_s": target_w,
             "limiter_w_after_angular_slew_rad_s": w_before_final_wheel_clip,
             "limiter_v_accel_limited": bool(target_v > v + 1e-12),
+            "limiter_launch_floor_mps": launch_floor_mps,
+            "limiter_launch_floor_applied": bool(
+                launch_floor_mps > previous_v + linear_accel * step + 1e-12
+                and target_v >= launch_floor_mps),
             "limiter_w_wheel_clipped": bool(abs(target_w_before_wheel_clip - target_w) > 1e-12),
             "limiter_w_slew_limited": bool(abs(target_w - w_before_final_wheel_clip) > 1e-12),
             "limiter_w_final_wheel_clipped": bool(abs(w_before_final_wheel_clip - w) > 1e-12),
