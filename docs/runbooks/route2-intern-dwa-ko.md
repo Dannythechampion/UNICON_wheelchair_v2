@@ -95,7 +95,18 @@ D4 정몽구 -> D5 제2공학관 (D4_to_D5) 로 띄웁니다. [Enter=예, n=취�
   그 뒤 약 9 m에 있는 높이 약 6 cm 과속방지턱 (88.3, -12.3)에서는 1회차가 0.8 m/s로 넘다가 앞이 +35°까지 들렸다.
   그래서 J 진입 (82.6, -22.5)부터 방지턱 지나 (88.1, -9.3)까지 band에 `max_speed_mps: 0.4`를 넣었다.
   감속은 구간 약 2.5 m 앞에서 시작한다. 0.4는 바퀴가 도는 최저 속도 0.35 바로 위다.
+  **2026-11-07 변경**: 0.4로 코너를 돌 때 경사 때문에 휠체어가 밀리는 느낌이 있어 구간을 둘로 나눴다.
+  J 진입 (82.6, -22.5)부터 원호를 지나 (88.3, -16.3)까지는 0.6, 거기서 방지턱 지나 (88.1, -9.3)까지는
+  그대로 0.4다(`tools/band_speed_zone.py`, 같은 네 경로). A에서 올라갈 때는 y≈-18.2에서 0.4로 줄이기 시작해
+  방지턱 약 6 m 앞부터 0.4다. 내려올 때(D4/D5 → A)는 방지턱을 0.4로 넘고 (88.3, -16.3)부터 0.6으로 코너를 돈다.
   방지턱은 감속만으로 막을 수 없으므로, 탑승자가 몸을 앞으로 숙이거나 뒤쪽 전도방지바퀴를 단다.
+- **D5 앞 내리막 → 오르막 전환 (2026-11-09 추가)**: D5→A에서 오르막 직전의 짧은 내리막(x 167.5–166.8)을
+  0.8로 내려가며 바퀴 속도가 0.86 m/s까지 붙었다. 전환점(x 166.5–166.2, 앞으로 +4.7°에서 들림 −5°로 바뀜)에서는
+  게이트가 앞 오르막 노면을 장애물로 보고 즉시 정지했다(1.48 m/s²). 탑승자는 이를 덜커덩으로 느꼈다.
+  그래서 전환점 이후 약 2초(0.5 m/s로 1 m)까지 0.5로 제한했다. D5→A·D5→D4는 (169.0, 53.02)–(165.1, 53.87),
+  A→D5·D4→D5는 (164.15, 54.1)–(167.55, 53.33)이고, 감속은 구간 1–1.5 m 앞에서 이미 0.5다.
+  오르막 중간의 꺾이는 지점 (153.5, 57.0)–(149.0, 58.5)은 네 경로 모두 0.6이다.
+  노면을 장애물로 보는 원인 자체는 아직 고치지 않았다(포인트클라우드를 녹화한 뒤 검토할 예정).
 - `<키>_smooth`(예: `D4_to_D5_smooth`)는 10-28 선을 스무딩해 D4에서 자른 이전 6개 구간이다
   (`routes/20261031_route2_*`, `tools/build_route2_intern_segments.py`). 이 구간의 D4 정지점은 (105.86, 59.75)로,
   수동 경로의 D4와 3.8 m 떨어져 있다.
@@ -176,6 +187,38 @@ install -m 755 $R/tools/nuc_home/*.sh ~/
 0.55 s 선행 보정과 비교하려면 `LATENCY_MODE=lead ~/start_route2_intern.sh`로 띄우고,
 어느 모드로 달렸는지 기록한다.
 
+### 저속 출발·조향 스위치 (2026-11-11, `feat/dwa-straight-launch`)
+
+11-09 저녁 A→J 오르막 실패(보행자 정지 뒤 재출발에서 조향이 흔들리고, 정상에서 급감속·스핀)를
+막으려고 넣은 기능들이다. 모두 환경변수로 켜고 끈다. `~/start_route2_intern.sh`
+(`start_hybrid_avoidance.sh` 포함) 앞에 붙인다.
+
+| 변수 | 기본 | 하는 일 |
+|---|---|---|
+| `LAUNCH_FLOOR_MPS` | `0.35` | 멈춘 상태에서 출발할 때 명령을 0.35로 바로 낸다(바퀴 데드밴드 ~0.3 m/s를 기어오르지 않음). follower와 tip_guard 둘 다. `0`이면 예전 램프 |
+| `STRAIGHT_LAUNCH` | `false` | 정지 뒤 두 바퀴가 0.25 m/s를 넘을 때까지 w=0. 시뮬레이션에서 방향 오차가 클 때 경로 이탈을 키워서 기본 끔 |
+| `DWA_CURV_MAX` | `0.9` | 저속 곡률 상한: \|w\| ≤ 0.9 × 명령 속도. `0`이면 끔 |
+| `DWA_YAW_ACCEL` | `0.8` | DWA 후보 w를 직전 w ± 0.8 rad/s² × 1 s로 제한하고 명령 램프도 0.8. `0`이면 예전(±0.5 전체, 1.5 rad/s²) |
+| `SMITH_RESIDUAL` | `off` | 저속(<0.3 m/s)에서 Smith 모델 오차를 IMU(`imu`) 또는 바퀴(`wheel`) 기준으로 보정. 시뮬레이션 결과가 엇갈려 기본 끔 |
+| `TIP_RESUME` | `true` | 0이 한 번 끼었다가 다시 주행 명령이 오면, tip_guard가 0부터가 아니라 현재 바퀴 속도에서 이어서 낸다(요청보다 높게는 안 냄) |
+| `TIP_NO_REVERSE` | `true` | tip_guard 최종 단계에서 \|w\| ≤ 2v/바퀴간격: 안쪽 바퀴가 후진(87)하지 않는다 |
+| `BASE_TURN_BOOST` | `false` | (기존) 저속 회전 때 두 바퀴에 같은 속도를 더함. 현장 비교 대상 |
+
+기능 하나만 끄려면 그 변수만 바꾼다. 예:
+
+```bash
+DWA_CURV_MAX=0 DWA_YAW_ACCEL=0 ~/start_route2_intern.sh
+```
+
+현장 비교는 같은 날 같은 구간을 설정만 바꿔 연달아 달린다(보행자 수가 결과를 크게 바꾼다).
+권장 순서: 전부 끔(`LAUNCH_FLOOR_MPS=0 DWA_CURV_MAX=0 DWA_YAW_ACCEL=0 TIP_RESUME=false TIP_NO_REVERSE=false`)
+→ 기본값 → 기본값 + `BASE_TURN_BOOST=true`.
+
+어떤 설정으로 달렸는지는 drive log에 남는다: `events.log`의 `PARAM ...`, `SWITCHES ...` 줄,
+`drive.csv`의 `sm_launch_floor`, `sm_curvature_max`, `sm_yaw_accel`, `sm_residual_mode` 열.
+볼 것: `LAUNCH start/end`, `STEER LIMITS RELAXED`(제한 안에서 갈 곳이 없어 그 주기만 해제),
+`TIP W_CLAMPED`(후진 방지 작동), tip 열의 `RESUMED`, 그리고 `HARD TURN` 줄 수.
+
 ## 4. 주행 전 점검
 
 먼저 비상정지: 다른 터미널에서 `rostopic echo /wheel_status`를 띄우고 E-stop을 눌렀다
@@ -238,6 +281,26 @@ export한 키는 그 프로세스 안에만 있어서, 새 SSH 창에서는 다�
 블랙박스가 세션 전체를 `~/localization_trials/blackbox_*.bag`에 남긴다. 주행 후
 파일 이름, 사용한 배포본(`readlink -f ~/wheelchair_deploys/current`), `LATENCY_MODE` 값,
 멈춘 위치와 `HOLD` 사유를 함께 적어 둔다. bag 다루는 법은 [`../debug_bags.md`](../debug_bags.md).
+
+블랙박스에는 `/dwa_follower/smith_state`도 들어간다. 계획 주기마다 JSON 한 줄이고, 담긴 값은 다음과 같다.
+
+- 플래너 pose 나이 `pose_age_s`
+- 지연 보상이 앞당긴 거리·각도 `lead_m`, `lead_yaw_deg`
+- Smith 모델과 바퀴 실측 `model_*`, `meas_*`
+- 베이스가 들고 있던 명령 `held_*`
+
+주행 로그도 같이 남는다. `go.sh`가 출발 직전에 켜고 `stop.sh`가 바퀴를 세운 뒤 끄며,
+결과는 `~/drive_logs/<시각>/`에 생긴다.
+
+| 파일 | 내용 |
+|---|---|
+| `drive.csv` | 10 Hz 행. Smith 값은 `sm_*` 열 |
+| `smith.jsonl` | smith_state 전체 |
+| `objects.jsonl` | 물체 목록 |
+| `events.log` | 사건 기록 |
+
+직접 다룰 때는 `bash <배포본>/source-linux/tools/drive_log.sh start|stop|status`를 쓴다.
+끄려면 `DRIVE_LOG=0`. 로거가 실패해도 출발과 정지는 막지 않는다.
 
 ## 첫 주행에서 볼 곳
 

@@ -210,7 +210,8 @@ def make_gpu_planner(base_class, core_module):
         def plan(self, state, obstacles=(), speed_cap=None,
                  last_yaw_rate=0.0, last_speed=None,
                  obstacle_floor_m=core_module.OBSTACLE_FLOOR_M,
-                 rejected_yaw_rates=None, candidate_veto=None):
+                 rejected_yaw_rates=None, candidate_veto=None,
+                 yaw_range_for=None):
             cap = self.max_speed if speed_cap is None else min(
                 self.max_speed, float(speed_cap))
             rejected = tuple(
@@ -218,13 +219,8 @@ def make_gpu_planner(base_class, core_module):
                     getattr(self, "rejected_yaw_rates", ())
                     if rejected_yaw_rates is None else rejected_yaw_rates)
                 if math.isfinite(float(value)))
-            pairs = [
-                (v, w)
-                for v in core_module.speed_samples(cap, current=last_speed)
-                if v > 0.0
-                for w in core_module.yaw_samples()
-                if not any(abs(w - value) < 1e-6 for value in rejected)
-            ]
+            pairs = core_module.candidate_pairs(
+                cap, last_speed, rejected, yaw_range_for)
             if not pairs:
                 return 0.0, 0.0, (
                     "GATE_REJECTED" if rejected else "SPEED_BELOW_FLOOR")
@@ -246,12 +242,12 @@ def make_gpu_planner(base_class, core_module):
             try:
                 if len(obstacles):
                     points = np.asarray(obstacles, dtype=float).reshape(-1, 2)
-                    watched = self._obstacle_paths(
-                        paths, span, core_module.OBSTACLE_PREVIEW_M)
-                    flat_watched = watched[:, :, :2].reshape(-1, 2)
-                    distance, _ = self.distance_backend.obstacle_query(
-                        flat_watched, points)
-                    clear = distance.reshape(len(pairs), -1).min(axis=1)
+                    # The same straight-or-route rule as the CPU planner
+                    # (DwaPlanner._obstacle_clearance), on this backend.
+                    clear = self._obstacle_clearance(
+                        paths, span, points,
+                        lambda flat, pts: self.distance_backend.obstacle_query(
+                            flat, pts)[0])
                 else:
                     clear = np.full(len(pairs), np.inf)
                 ok &= clear >= float(obstacle_floor_m)

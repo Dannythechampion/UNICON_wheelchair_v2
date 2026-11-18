@@ -90,6 +90,7 @@ from cluster_guard import (GO_ROUND, PERSON_BYPASS,
 from mpc_anchor import DEFAULT_GAIN, StateAnchor
 from mpc_command import MAX_COMMAND_GAP_S, advance_command, jerk_limited
 from route_mask import RouteMask
+from straight_launch import LAUNCH_SPEED_MPS, StraightLaunch, launch_speed
 from waypoint_follower import (WaypointFollower, CONTROL_HZ, CREEP_SPEED,
                                GUARD_SLOW_EXTRA_M, MAX_ACCEL, MAX_DECEL,
                                MAX_SPEED, MAX_YAW_RATE, PLAN_AHEAD_M)
@@ -100,6 +101,63 @@ from waypoint_follower import (WaypointFollower, CONTROL_HZ, CREEP_SPEED,
 # acceleration for the same reason the pursuit follower allows it: stopping
 # sooner is never the unsafe direction.
 YAW_SLEW_RPS2 = 1.5
+# Low-speed steering limits (dwa_core.yaw_range, 2026-11-11). Both default
+# on; ~curvature_max 0 and ~yaw_accel 0 restore the behaviour before them
+# (no cap; candidates over the full +-MAX_YAW_RATE and the ramp at
+# YAW_SLEW_RPS2).
+#   B1 CURVATURE_MAX: |w| <= 0.9 * the speed commanded this cycle.
+#   B2 YAW_ACCEL: candidates within last w +- 0.8 rad/s^2 * dt, and the ramp
+#      slews at the same 0.8 - the base's own p90 yaw acceleration on 11-09
+#      was 0.66-0.90 rad/s^2, the clean runs' command slew p90 0.50-0.73,
+#      the evening's 1.00.
+CURVATURE_MAX = 0.9
+YAW_ACCEL_RPS2 = 0.8
+
+# Smith model error (problem 3, 2026-11-11). The predictor assumes the yaw
+# rate it commanded is the yaw rate the chair makes. Under the wheels'
+# deadband it is not: on 11-09 |model - IMU| p90 was 0.27-0.36 rad/s below
+# 0.3 m/s in every run (about 7 deg over the 0.41 s horizon), and at
+# 0.3-0.5 m/s 0.25-0.33 in the failed evening runs against 0.12-0.18 in the
+# afternoon; at cruise 0.10-0.15. So the carried error (measured - model,
+# low-passed) is applied in full under RESIDUAL_FULL_BELOW_MPS, tapered to
+# nothing at RESIDUAL_ZERO_ABOVE_MPS - cruise keeps the prediction that was
+# measured to be better without it (11-02 replay) - and the yaw rate it is
+# measured against is the IMU's, as actuation_lag recommends: /wheel_status
+# reads yaw 10-15 % low in 0.05 rad/s counts. "wheel" uses the wheel report
+# instead, "off" is the behaviour before this.
+SMITH_RESIDUAL_MODES = ("off", "wheel", "imu")
+SMITH_RESIDUAL_DEFAULT = "off"
+SMITH_RESIDUAL_TAU_ON_S = 0.3
+
+
+def smith_residual_mode(value):
+    """The ~smith_residual parameter as one of SMITH_RESIDUAL_MODES.
+
+    rosrun's _name:=value goes through YAML 1.1, which reads a bare `off`
+    as the boolean False: the 11-16 deploy died at start-up on exactly the
+    default the launch scripts pass. False is therefore "off". True has no
+    meaning (on with which source?) and is rejected with everything else.
+    """
+    if value is False:
+        return "off"
+    if isinstance(value, bool):
+        return str(value)
+    return str(value).strip().lower()
+SMITH_IMU_TOPIC = "/livox/imu"
+SMITH_IMU_FRESH_S = 0.2
+RESIDUAL_FULL_BELOW_MPS = 0.30
+RESIDUAL_ZERO_ABOVE_MPS = 0.50
+
+
+def residual_weight(speed_mps, full_below=RESIDUAL_FULL_BELOW_MPS,
+                    zero_above=RESIDUAL_ZERO_ABOVE_MPS):
+    """1 under full_below, 0 over zero_above, linear between."""
+    speed = abs(float(speed_mps))
+    if speed <= full_below:
+        return 1.0
+    if speed >= zero_above:
+        return 0.0
+    return (zero_above - speed) / (zero_above - full_below)
 
 # A gate stop that lasts a few cycles leaves the chair still rolling - the
 # base takes 0.55 s to answer and the chair coasts - but the accepted /cmd_vel
@@ -154,6 +212,14 @@ LATENCY_S = 0.55
 # before it has been driven; ~latency_mode lead puts the old lead back.
 LATENCY_MODES = ("lead", "smith", "off")
 LATENCY_MODE = "smith"
+
+# One JSON line per planning cycle with what the lag compensation was given
+# and what it produced, so a bag can say whether the vehicle's late reaction
+# (0.3-0.4 s behind the model on the 11-07 drive) is Smith not leading or the
+# planner pose arriving stale. Read-only; nothing in the stack subscribes to
+# it. An absolute name, because the follower runs under different node names
+# in the bring-ups (waypoint_follower, or the script's own name).
+SMITH_STATE_TOPIC = "/dwa_follower/smith_state"
 
 # How wide a slice of each object the planner is shown, either side of the
 # centreline. Wider than the follower's CORRIDOR_HALF_WIDTH 0.45, which is
@@ -246,8 +312,27 @@ class DwaFollower(WaypointFollower):
             raise ValueError("~latency_mode must be one of %s, got %r"
                              % (", ".join(LATENCY_MODES), self.latency_mode))
         # The model-error term is off unless asked for (see actuation_lag).
-        self.smith = SmithPredictor(residual_tau_s=float(rospy.get_param(
-            "~smith_residual_tau_s", RESIDUAL_TAU_S)))
+        # The model-error term (actuation_lag), measured where the model is
+        # wrong: low speed, against the IMU's yaw rate (see
+        # SMITH_RESIDUAL_MODES).
+        self.smith_residual = smith_residual_mode(rospy.get_param(
+            "~smith_residual", SMITH_RESIDUAL_DEFAULT))
+        if self.smith_residual not in SMITH_RESIDUAL_MODES:
+            raise ValueError("~smith_residual must be one of %s, got %r" % (
+                ", ".join(SMITH_RESIDUAL_MODES), self.smith_residual))
+        residual_tau = float(rospy.get_param(
+            "~smith_residual_tau_s",
+            SMITH_RESIDUAL_TAU_ON_S if self.smith_residual != "off"
+            else RESIDUAL_TAU_S))
+        if self.smith_residual == "off":
+            residual_tau = 0.0
+        self.smith = SmithPredictor(residual_tau_s=residual_tau)
+        self.imu_gz = 0.0
+        self.imu_stamp = None
+        if self.smith_residual == "imu":
+            # Imported here so the desk tests' message stubs need not know it.
+            from sensor_msgs.msg import Imu
+            rospy.Subscriber(SMITH_IMU_TOPIC, Imu, self.on_imu, queue_size=50)
         rospy.loginfo("DWA latency compensation: %s%s", self.latency_mode,
                       " %.2f s" % self.latency_s
                       if self.latency_mode == "lead" else
@@ -256,12 +341,22 @@ class DwaFollower(WaypointFollower):
                           "low-passed %.2f s" % self.smith.residual_tau_s
                           if self.smith.residual_tau_s > 0.0 else "off")
                       if self.latency_mode == "smith" else "")
+        self.smith_state_pub = rospy.Publisher(
+            SMITH_STATE_TOPIC, String, queue_size=10)
         self.planner = dwa_core.DwaPlanner(
             self.band, self.waypoints,
             distance_m=float(rospy.get_param("~sim_distance_m",
                                               dwa_core.SIM_DISTANCE_M)),
             grace=float(rospy.get_param("~band_grace", 0.0)),
             route_mask=RouteMask(rospy.get_param("~drivable_mask")))
+        self.planner.obstacle_extension = str(rospy.get_param(
+            "~obstacle_extension", dwa_core.OBSTACLE_EXTENSION))
+        if self.planner.obstacle_extension not in \
+                dwa_core.OBSTACLE_EXTENSION_MODES:
+            raise ValueError(
+                "~obstacle_extension must be one of %s, got %r" % (
+                    ", ".join(dwa_core.OBSTACLE_EXTENSION_MODES),
+                    self.planner.obstacle_extension))
         self.anchor = StateAnchor(
             gain=float(rospy.get_param("~anchor_gain", DEFAULT_GAIN)))
         self.last_command_stamp = None
@@ -270,6 +365,30 @@ class DwaFollower(WaypointFollower):
         self.dwa_status = ""
         # Carried across cycles so the ramp has a slope to be limited against.
         self.command_accel = 0.0
+        # Launch from rest (straight_launch): ~launch_floor_mps 0.0 restores
+        # the plain ramp, ~straight_launch false lets the planner steer from
+        # the first cycle as before.
+        self.launch_floor_mps = float(rospy.get_param(
+            "~launch_floor_mps", LAUNCH_SPEED_MPS))
+        self.launch = StraightLaunch(enabled=bool(rospy.get_param(
+            "~straight_launch", False)))
+        self.curvature_max = float(rospy.get_param(
+            "~curvature_max", CURVATURE_MAX))
+        self.yaw_accel = float(rospy.get_param(
+            "~yaw_accel", YAW_ACCEL_RPS2))
+        if not (0.0 <= self.curvature_max <= 5.0) or \
+                not (0.0 <= self.yaw_accel <= 5.0):
+            raise ValueError("~curvature_max / ~yaw_accel out of range: "
+                             "%r / %r" % (self.curvature_max, self.yaw_accel))
+        rospy.loginfo("DWA steering limits: curvature %s, yaw accel %s",
+                      "%.2f 1/m" % self.curvature_max
+                      if self.curvature_max > 0.0 else "off",
+                      "%.2f rad/s^2 (window + ramp)" % self.yaw_accel
+                      if self.yaw_accel > 0.0 else
+                      "off (ramp %.1f rad/s^2)" % YAW_SLEW_RPS2)
+        rospy.loginfo("DWA launch: floor %.2f m/s, straight launch %s",
+                      self.launch_floor_mps,
+                      "on" if self.launch.enabled else "off")
         self.gate_reason = ""
         self.gate_blocked_since = None
         self.gate_detail = ""
@@ -285,8 +404,12 @@ class DwaFollower(WaypointFollower):
                          self.on_accepted_command, queue_size=1)
         rospy.loginfo(
             "DWA profile: sim %.2f m, %d speeds x %d yaw rates, band and "
-            "drivable mask as hard rejects", self.planner.distance_m,
-            len(dwa_core.speed_samples()), len(dwa_core.yaw_samples()))
+            "drivable mask as hard rejects, obstacle tail %s to %.1f m, "
+            "threat corridor %s",
+            self.planner.distance_m,
+            len(dwa_core.speed_samples()), len(dwa_core.yaw_samples()),
+            self.planner.obstacle_extension, dwa_core.OBSTACLE_PREVIEW_M,
+            self.threat_corridor)
 
     def on_gate_status(self, message):
         """Track how long the gate has been refusing, and why."""
@@ -323,6 +446,11 @@ class DwaFollower(WaypointFollower):
         self.last_yaw_rate = float(message.angular.z)
         if accepted_speed <= 0.02:
             self.command_accel = 0.0
+            # Any stop that reached the base makes the next move a launch
+            # (straight_launch), coasting wheels included.
+            launch = getattr(self, "launch", None)
+            if launch is not None:
+                launch.note_stop()
             # The slope is dropped, the speed is not: resume from what the
             # wheels are doing, not from the zero the gate passed down.
             rolling = self.rolling_wheel_speed()
@@ -350,7 +478,8 @@ class DwaFollower(WaypointFollower):
             return None
         return min(measured, dwa_core.MAX_SPEED)
 
-    def command_for_target(self, target_v, target_w, elapsed):
+    def command_for_target(self, target_v, target_w, elapsed,
+                           hold_yaw=False, limits=True):
         """The raw command the ramp will publish for one planner target.
 
         Candidate safety has to judge this command rather than the solver's
@@ -358,6 +487,9 @@ class DwaFollower(WaypointFollower):
         those two very different; validating the target and publishing the
         ramped command would recreate the planner/gate disagreement one step
         later.
+
+        From rest the speed goes straight to the launch floor, and with
+        hold_yaw a moving target is commanded straight (straight_launch).
         """
         step = max(float(elapsed), 1e-3)
         wanted_accel = np.clip(
@@ -365,14 +497,82 @@ class DwaFollower(WaypointFollower):
             -MAX_DECEL, MAX_ACCEL)
         command_accel = jerk_limited(
             wanted_accel, self.command_accel, step)
+        yaw_accel = float(getattr(self, "yaw_accel", 0.0)) if limits else 0.0
+        slew = yaw_accel if yaw_accel > 0.0 else YAW_SLEW_RPS2
         accel = np.array([
             command_accel,
             np.clip((float(target_w) - self.last_yaw_rate) / step,
-                    -YAW_SLEW_RPS2, YAW_SLEW_RPS2)])
+                    -slew, slew)])
         speed, yaw_rate = advance_command(
             self.current_speed, self.last_yaw_rate, accel, elapsed,
             dwa_core.MAX_SPEED, MAX_YAW_RATE)
+        floor = launch_speed(self.current_speed, target_v,
+                             getattr(self, "launch_floor_mps", 0.0))
+        if floor is not None and speed < floor:
+            # Through the deadband in one step; the ramp (and its jerk
+            # limit) resumes from the floor, not from a carried slope.
+            speed, command_accel = floor, 0.0
+        curvature_max = float(getattr(self, "curvature_max", 0.0)) \
+            if limits else 0.0
+        if curvature_max > 0.0:
+            # B1 on what is actually sent this cycle; cutting |w| down to
+            # the cap is allowed at once (dwa_core.yaw_range).
+            cap = min(MAX_YAW_RATE, curvature_max * max(0.0, speed))
+            yaw_rate = float(np.clip(yaw_rate, -cap, cap))
+        if hold_yaw and float(target_v) >= dwa_core.TURN_FLOOR_SPEED:
+            yaw_rate = 0.0
         return float(speed), float(yaw_rate), float(command_accel)
+
+    def yaw_range_for(self, elapsed, hold_yaw=False):
+        """v -> (lo, hi) for the planner, or None when B1 and B2 are off.
+
+        Built from command_for_target itself, so the speed B1 caps on is the
+        speed the ramp will send for that target this cycle (D included).
+        """
+        curvature_max = float(getattr(self, "curvature_max", 0.0))
+        yaw_accel = float(getattr(self, "yaw_accel", 0.0))
+        if curvature_max <= 0.0 and yaw_accel <= 0.0:
+            return None
+        # The window is what the ramp can reach in the same 1 s horizon the
+        # speed samples use (dwa_core.yaw_range explains why not one cycle).
+        step = dwa_core.VELOCITY_WINDOW_S
+        speeds = {}
+        # Taken now: the window is round the command already sent, and must
+        # not move if the closure is asked again after this cycle's publish.
+        last_w = float(self.last_yaw_rate)
+
+        def bounds(v):
+            if v not in speeds:
+                speeds[v] = self.command_for_target(v, last_w, elapsed)[0]
+            return dwa_core.yaw_range(
+                speeds[v], last_w, step,
+                curvature_max=curvature_max, yaw_accel=yaw_accel,
+                limit=MAX_YAW_RATE)
+        return bounds
+
+    def log_launch_transition(self, was_active, held_s, left, right,
+                              target_w):
+        """One line per launch start and end, with the wheels' numbers."""
+        launch = self.launch
+        if launch.active and not was_active:
+            rospy.loginfo(
+                "LAUNCH start: wheels %.2f / %.2f m/s, planner w %+.2f held "
+                "at 0", left, right, target_w)
+        elif was_active and not launch.active:
+            rospy.loginfo(
+                "LAUNCH end (%s) after %.2f s: wheels %.2f / %.2f m/s",
+                launch.last_exit or "?",
+                -1.0 if held_s is None else held_s, left, right)
+
+    def launch_inputs(self, now):
+        """(left, right, fresh) from the base's own wheel report."""
+        stamp = getattr(self, "wheel_status_stamp", None)
+        fresh = False
+        if stamp is not None:
+            age = (now - stamp).to_sec()
+            fresh = 0.0 <= age <= WHEEL_SPEED_FRESH_S
+        return (float(getattr(self, "measured_left", 0.0)),
+                float(getattr(self, "measured_right", 0.0)), fresh)
 
     def planner_candidate_veto(self, _now, _decision, _command_for_target):
         """Optional downstream-geometry veto, supplied by guarded profiles."""
@@ -386,7 +586,46 @@ class DwaFollower(WaypointFollower):
         # The jerk limit shapes driving, never braking. Dropping the carried
         # acceleration here is what keeps a stop as abrupt as it was before.
         self.command_accel = 0.0
+        # A hold ends any launch; the next one starts from rest afresh.
+        launch = getattr(self, "launch", None)
+        if launch is not None:
+            launch.reset("hold")
+            launch.note_stop()
         WaypointFollower.send_stop(self)
+
+    def on_imu(self, message):
+        """The IMU's yaw rate, for the Smith model-error term."""
+        self.imu_gz = float(message.angular_velocity.z)
+        self.imu_stamp = rospy.Time.now()
+
+    def residual_inputs(self, now_s):
+        """(measured yaw rate, residual weight) for the Smith predictor.
+
+        The yaw rate is the IMU's in "imu" mode while it is fresh, else the
+        wheel report's (with a throttled warning: a dead IMU must not read
+        as a chair that stopped turning). The weight is residual_weight on
+        the wheels' speed, or 0 when the term is off.
+        """
+        mode = getattr(self, "smith_residual", "off")
+        yaw_rate = float(getattr(self, "measured_yaw_rate", 0.0))
+        self.residual_src = "wheel"
+        if mode == "imu":
+            stamp = getattr(self, "imu_stamp", None)
+            age = None if stamp is None else float(now_s) - stamp.to_sec()
+            if age is not None and -0.05 <= age <= SMITH_IMU_FRESH_S:
+                yaw_rate = float(self.imu_gz)
+                self.residual_src = "imu"
+            else:
+                rospy.logwarn_throttle(
+                    10.0, "Smith residual: IMU %s, using the wheel yaw rate",
+                    "never received" if age is None else "%.2f s old" % age)
+        if mode == "off":
+            self.residual_src = "off"
+            weight = 0.0
+        else:
+            weight = residual_weight(getattr(self, "measured_speed", 0.0))
+        self.residual_weight_now = weight
+        return yaw_rate, weight
 
     def on_odom(self, message):
         """Wheel odometry, kept for the anchor as well as for the base."""
@@ -416,7 +655,11 @@ class DwaFollower(WaypointFollower):
         blocks, points = corridor_obstacle_points(
             self.cluster_summary, OBSTACLE_HALF_WIDTH_M,
             max_distance_m=PLAN_AHEAD_M,
-            exclude_track_ids=self.planner_excluded_track_ids())
+            exclude_track_ids=self.planner_excluded_track_ids(),
+            # This cycle's frame, set by corridor_threat just before: what
+            # stands round the bend, and on the chair's own line, as well as
+            # the straight strip.
+            route_frame=getattr(self, "threat_route_frame", None))
         if not blocks or not points:
             return ()
         heading = np.array([math.cos(state[2]), math.sin(state[2])])
@@ -439,9 +682,10 @@ class DwaFollower(WaypointFollower):
         if self.latency_mode == "off":
             return state
         if self.latency_mode == "smith":
+            yaw_rate, weight = self.residual_inputs(now_s)
             return np.array(self.smith.predict(
-                state, self.measured_speed, self.measured_yaw_rate, now_s),
-                dtype=float)
+                state, self.measured_speed, yaw_rate, now_s,
+                residual_weight=weight), dtype=float)
         lead = self.latency_s
         if lead <= 0.0:
             return state
@@ -543,7 +787,9 @@ class DwaFollower(WaypointFollower):
         # upstream of the ICP correction. Unfixed, that lag costs 0.33 m of
         # travel at 0.6 m/s and 0.55 m at 1.0 - the planner correcting for
         # where the chair no longer is, which is what lateral hunting is.
+        anchored = state
         state = self.led_state(state, now.to_sec())
+        self.publish_smith_state(anchored, state, now)
         elapsed = 1.0 / CONTROL_HZ
         if self.last_command_stamp is not None:
             elapsed = (now - self.last_command_stamp).to_sec()
@@ -553,19 +799,76 @@ class DwaFollower(WaypointFollower):
                 elapsed)
             self.current_speed = float(state[3])
             self.last_yaw_rate = float(state[4])
-        command_for_target = lambda v, w: self.command_for_target(
-            v, w, elapsed)
-        candidate_veto = self.planner_candidate_veto(
-            now, decision, command_for_target)
-        target_v, target_w, status = self.planner.plan(
-            state, obstacles, speed_cap=cap,
-            last_yaw_rate=self.last_yaw_rate,
-            last_speed=self.current_speed,
-            obstacle_floor_m=(
-                PERSON_BYPASS_CLEARANCE_M
-                if decision == PERSON_BYPASS
-                else dwa_core.OBSTACLE_FLOOR_M),
-            candidate_veto=candidate_veto)
+        # Straight launch: decided before planning, so candidate safety
+        # judges the straight command that will actually be sent. Never
+        # while going round something - there the first metre is the turn.
+        launch = getattr(self, "launch", None)
+        left, right, wheels_fresh = self.launch_inputs(now)
+        launch_allowed = decision not in (GO_ROUND, PERSON_BYPASS)
+        hold_yaw = launch is not None and launch.eligible(
+            self.current_speed, left, right, wheels_fresh, launch_allowed)
+        was_active = launch is not None and launch.active
+        held_s = None if launch is None else launch.held_for(now.to_sec())
+
+        def plan_with(hold, limits=True):
+            command_for_target = lambda v, w: self.command_for_target(
+                v, w, elapsed, hold_yaw=hold, limits=limits)
+            candidate_veto = self.planner_candidate_veto(
+                now, decision, command_for_target)
+            extra = {}
+            yaw_range_for = self.yaw_range_for(elapsed, hold) \
+                if limits else None
+            if yaw_range_for is not None:
+                extra["yaw_range_for"] = yaw_range_for
+            return command_for_target, self.planner.plan(
+                state, obstacles, speed_cap=cap,
+                last_yaw_rate=self.last_yaw_rate,
+                last_speed=self.current_speed,
+                obstacle_floor_m=(
+                    PERSON_BYPASS_CLEARANCE_M
+                    if decision == PERSON_BYPASS
+                    else dwa_core.OBSTACLE_FLOOR_M),
+                candidate_veto=candidate_veto, **extra)
+
+        command_for_target, (target_v, target_w, status) = plan_with(hold_yaw)
+        if hold_yaw and status != "OK":
+            # Straight was refused downstream; a straight launch is not worth
+            # a stop. Plan again as before this existed.
+            # Disarmed for this launch, so the next cycles plan once.
+            launch.reset("no straight candidate")
+            launch.armed = False
+            hold_yaw = False
+            command_for_target, (target_v, target_w, status) = \
+                plan_with(False)
+        relaxed = False
+        if status != "OK" and self.yaw_range_for(elapsed) is not None:
+            # B1/B2 are comfort limits, never a reason to stop: if nothing
+            # inside them is admissible (a chair left skewed off the route
+            # needs a tighter or quicker turn than they allow), plan this
+            # cycle as before they existed.
+            limited_status = status
+            command_for_target, (target_v, target_w, status) = plan_with(
+                hold_yaw, limits=False)
+            relaxed = status == "OK"
+            if relaxed and getattr(self, "steer_relaxed_reason", "") != \
+                    limited_status:
+                rospy.logwarn("DWA %s inside the steering limits; this "
+                              "cycle planned without them", limited_status)
+            self.steer_relaxed_reason = limited_status if relaxed else ""
+        else:
+            self.steer_relaxed_reason = ""
+        if hold_yaw:
+            hold_yaw = launch.update(
+                now.to_sec(), self.current_speed, target_v, left, right,
+                wheels_fresh, launch_allowed)
+            if not hold_yaw:
+                command_for_target = lambda v, w: self.command_for_target(
+                    v, w, elapsed, limits=not relaxed)
+        elif launch is not None:
+            launch.reset("not eligible")
+        if launch is not None:
+            self.log_launch_transition(was_active, held_s, left, right,
+                                       target_w)
         if status != "OK":
             if status != self.dwa_status:
                 if status == "SPEED_BELOW_FLOOR":
@@ -596,10 +899,100 @@ class DwaFollower(WaypointFollower):
         self.current_speed = speed
         self.last_yaw_rate = yaw_rate
         self.publish_state(
-            "DWA wp=%d/%d v=%.2f w=%+.2f target %.2f/%+.2f%s" % (
+            "DWA wp=%d/%d v=%.2f w=%+.2f target %.2f/%+.2f%s%s" % (
                 self.nearest_index, len(self.waypoints), speed, yaw_rate,
                 target_v, target_w,
+                (" LAUNCH" if hold_yaw else "")
+                + (" STEER_RELAXED" if relaxed else ""),
                 "" if self.policies else " POLICIES_OFF"), "DWA:OK")
+
+    def smith_state_record(self, anchored, led, now):
+        """What the lag compensation saw and did this cycle, as a dict.
+
+        anchored is the planner state before the lead (StateAnchor output),
+        led the state the planner actually plans from. The model_* fields are
+        the Smith base model with delay brought up to now - compare them with
+        meas_* for the model error, and lead_m/lead_yaw_deg with the turn
+        the chair then makes for whether the lead was long enough.
+        """
+        def num(value, digits=4):
+            value = float(value)
+            return round(value, digits) if math.isfinite(value) else None
+
+        def age(stamp):
+            if stamp is None or (hasattr(stamp, "is_zero")
+                                 and stamp.is_zero()):
+                return None
+            return num((now - stamp).to_sec(), 3)
+
+        now_s = now.to_sec()
+        dyaw = math.atan2(math.sin(led[2] - anchored[2]),
+                          math.cos(led[2] - anchored[2]))
+        record = {
+            "t": round(now_s, 3),
+            "mode": self.latency_mode,
+            "pose_age_s": age(getattr(self, "pose_stamp", None)),
+            "wheel_age_s": age(getattr(self, "wheel_status_stamp", None)),
+            "anchor": [num(v) for v in anchored[:5]],
+            "led": [num(v) for v in led[:3]],
+            "lead_m": num(math.hypot(led[0] - anchored[0],
+                                     led[1] - anchored[1]), 3),
+            "lead_yaw_deg": num(math.degrees(dyaw), 2),
+            "meas_v": num(getattr(self, "measured_speed", float("nan"))),
+            "meas_w": num(getattr(self, "measured_yaw_rate", float("nan"))),
+            "wheel_l": num(getattr(self, "measured_left", float("nan"))),
+            "wheel_r": num(getattr(self, "measured_right", float("nan"))),
+        }
+        launch = getattr(self, "launch", None)
+        record.update({
+            # Which of the launch switches this drive ran with, every
+            # message, so a drive log can never be read against the wrong
+            # configuration.
+            "launch_floor": num(getattr(self, "launch_floor_mps", 0.0), 3),
+            "straight_launch": bool(launch is not None and launch.enabled),
+            "launch": bool(launch is not None and launch.active),
+            "launch_armed": bool(launch is not None and launch.armed),
+            "launch_exit": "" if launch is None else launch.last_exit,
+            "curvature_max": num(getattr(self, "curvature_max", 0.0), 3),
+            "yaw_accel": num(getattr(self, "yaw_accel", 0.0), 3),
+            "steer_relaxed": getattr(self, "steer_relaxed_reason", ""),
+            "residual_mode": getattr(self, "smith_residual", "off"),
+            "residual_src": getattr(self, "residual_src", ""),
+            "residual_weight": num(getattr(self, "residual_weight_now", 0.0),
+                                   3),
+            "imu_gz": num(getattr(self, "imu_gz", float("nan"))),
+        })
+        smith = getattr(self, "smith", None)
+        if self.latency_mode == "smith" and smith is not None:
+            held = smith.command_at(now_s)
+            record.update({
+                "horizon_s": num(smith.horizon_s, 3),
+                "model_v": num(smith.speed.output),
+                "model_w": num(smith.yaw.output),
+                "resid_v": num(smith.residual[0]),
+                "resid_w": num(smith.residual[1]),
+                "held_v": num(held[0]),
+                "held_w": num(held[1]),
+                "n_cmds": len(smith.stamps),
+                "last_cmd_age_s": num(now_s - smith.stamps[-1], 3)
+                if smith.stamps else None,
+            })
+        elif self.latency_mode == "lead":
+            record["horizon_s"] = num(self.latency_s, 3)
+        return record
+
+    def publish_smith_state(self, anchored, led, now):
+        """Publish smith_state_record; never lets logging stop the drive."""
+        publisher = getattr(self, "smith_state_pub", None)
+        if publisher is None:
+            return
+        try:
+            publisher.publish(String(data=json.dumps(
+                self.smith_state_record(anchored, led, now),
+                separators=(",", ":"))))
+        except Exception as exc:  # diagnostics only
+            rospy.logwarn_throttle(30.0, "smith_state publish failed: %r",
+                                   exc)
 
     def publish_state(self, text, state=None):
         """Publish every cycle, log only on a change of state.

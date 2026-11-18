@@ -54,6 +54,8 @@ something whose position is not actually known.
 import json
 import math
 
+import numpy as np
+
 from cluster_tracking import MOVING, STATIC, UNKNOWN
 
 # Must match obstacle_clusters.WINDOW_S; test_cluster_guard pins the pair.
@@ -105,8 +107,20 @@ class Threat(object):
                  track_id=None, observed_stamp_s=None,
                  directly_observed=True, geometry_valid=True,
                  centre_forward_m=None, half_forward_m=None,
-                 half_lateral_m=None):
+                 half_lateral_m=None, route_s_m=None, route_d_m=None,
+                 on_route=True):
         self.distance_m = distance_m
+        # Route coordinates of the box centre when the threat was judged
+        # against a RouteFrame: station ahead of the chair along the route
+        # and signed offset from it (left positive). None otherwise.
+        self.route_s_m = route_s_m
+        self.route_d_m = route_d_m
+        # False only for a threat that is NOT on the route but sits in the
+        # chair's straight gate zone (waypoint_follower.cluster_threat).
+        # Such a threat may slow or stop the chair; it must never authorise
+        # a bypass, because a bypass side-commit would forbid the very turn
+        # that takes the chair back to the route (J corner, 11-04 / 11-07).
+        self.on_route = on_route
         self.motion = motion
         self.label = label
         self.track_id = track_id
@@ -397,21 +411,234 @@ def corridor_reach(item, lateral_shift_m, half_width_m):
     return True, distance, motion
 
 
+# Route-frame threat geometry (2026-11-08).
+#
+# The straight strip above answers "is it in front of the chair". In a bend
+# that is the wrong question: at the J corner of route2 the outer wall, a
+# permanent structure 0.5-0.9 m outside the band, stood dead ahead while the
+# route turned left, was judged a parked obstacle 7-8 m away and armed a
+# static-object bypass whose side-commit then forbade the left turn (11-04,
+# 11-07 drives 2 and 3, reproduced by bag replay). A RouteFrame answers "is it
+# on the route ahead": every return is projected onto the route near the
+# chair and judged by (station ahead along the route, offset from it).
+ROUTE_FRAME_BACK_M = 2.0
+ROUTE_FRAME_EXTRA_M = 2.0
+ROUTE_SAMPLE_M = 0.2
+ROUTE_MAX_SAMPLES_PER_OBJECT = 600
+
+
+class RouteFrame(object):
+    """The route around the chair, for judging chair-frame points against.
+
+    Only the segments from ROUTE_FRAME_BACK_M behind the chair's station to
+    ROUTE_FRAME_EXTRA_M past the horizon are projected onto, so a route that
+    passes near itself (an out-and-back, a U-turn) cannot claim a point for
+    the wrong leg. The horizon stops at the route's end: nothing past the
+    goal is somewhere the chair will drive (11-07, 88 s DWA_WAIT at D4 for
+    objects 6 m beyond the end).
+    """
+
+    def __init__(self, route_xy, arc_m, pose_xy, pose_yaw, chair_s_m,
+                 chair_d_m, horizon_m):
+        self.route = route_xy
+        self.arc = arc_m
+        self.pose_xy = (float(pose_xy[0]), float(pose_xy[1]))
+        self.pose_yaw = float(pose_yaw)
+        self.chair_s_m = float(chair_s_m)
+        self.chair_d_m = float(chair_d_m)
+        self.horizon_m = max(0.0, min(float(horizon_m),
+                                      float(arc_m[-1]) - self.chair_s_m))
+        # Set by the caller while a bypass is active: the line the chair is
+        # actually driving, parallel to the route at chair_d_m, then counts
+        # as part of the corridor too. Off by default - with it on, a chair
+        # pushed 0.9 m outside the J corner would find the outer wall on
+        # "its" line and re-arm the bypass that pushed it there.
+        self.follow_chair_line = False
+        delta = np.diff(route_xy, axis=0)
+        self._length = np.linalg.norm(delta, axis=1)
+        self._direction = delta / np.maximum(self._length, 1e-9)[:, None]
+        lo_s = self.chair_s_m - ROUTE_FRAME_BACK_M
+        hi_s = self.chair_s_m + self.horizon_m + ROUTE_FRAME_EXTRA_M
+        self._lo = int(max(np.searchsorted(arc_m, lo_s) - 1, 0))
+        self._hi = int(min(np.searchsorted(arc_m, hi_s) + 1, len(delta)))
+        self._hi = max(self._hi, self._lo + 1)
+
+    @classmethod
+    def build(cls, route_xy, arc_m, pose_xy, pose_yaw, nearest_index,
+              horizon_m, search_segments=10):
+        """A frame for this pose, or None when there is nothing to follow."""
+        try:
+            route = np.asarray(route_xy, dtype=float).reshape(-1, 2)
+            arc = np.asarray(arc_m, dtype=float).reshape(-1)
+            px, py = float(pose_xy[0]), float(pose_xy[1])
+            yaw = float(pose_yaw)
+            index = int(nearest_index)
+        except (TypeError, ValueError, IndexError):
+            return None
+        if len(route) < 2 or len(arc) != len(route) or \
+                not all(math.isfinite(v) for v in (px, py, yaw)):
+            return None
+        segments = len(route) - 1
+        index = min(max(index, 0), segments)
+        lo = max(index - int(search_segments), 0)
+        hi = min(index + int(search_segments), segments)
+        hi = max(hi, lo + 1)
+        s, d = _project(route, arc, np.array([[px, py]]), lo, hi)
+        return cls(route, arc, (px, py), yaw, s[0], d[0], horizon_m)
+
+    def to_map(self, points):
+        pts = np.asarray(points, dtype=float).reshape(-1, 2)
+        c, s = math.cos(self.pose_yaw), math.sin(self.pose_yaw)
+        return np.stack([self.pose_xy[0] + c * pts[:, 0] - s * pts[:, 1],
+                         self.pose_xy[1] + s * pts[:, 0] + c * pts[:, 1]],
+                        axis=1)
+
+    def project(self, chair_points):
+        """(station ahead of the chair, offset) for chair-frame points."""
+        s, d = _project(self.route, self.arc, self.to_map(chair_points),
+                        self._lo, self._hi)
+        return s - self.chair_s_m, d
+
+    def in_corridor(self, ahead, offset, half_width_m, lateral_shift_m=0.0,
+                    max_ahead_m=None):
+        reach = self.horizon_m if max_ahead_m is None else min(
+            self.horizon_m, float(max_ahead_m))
+        inside = np.abs(offset - float(lateral_shift_m)) < half_width_m
+        if self.follow_chair_line:
+            inside |= np.abs(offset - self.chair_d_m) < half_width_m
+        return inside & (ahead >= 0.0) & (ahead <= reach)
+
+
+def _project(route, arc, points, lo, hi):
+    """(arc station, signed left offset) of map points on segments [lo, hi).
+
+    Each point takes the segment it is nearest to, so the station is
+    continuous rather than snapping vertex to vertex.
+    """
+    a = route[lo:hi]
+    delta = route[lo + 1:hi + 1] - a
+    length = np.linalg.norm(delta, axis=1)
+    direction = delta / np.maximum(length, 1e-9)[:, None]
+    rel = points[:, None, :] - a[None, :, :]
+    along = np.clip((rel * direction[None]).sum(axis=2), 0.0, length[None])
+    foot = a[None] + direction[None] * along[:, :, None]
+    off = points[:, None, :] - foot
+    gap = np.hypot(off[:, :, 0], off[:, :, 1])
+    k = np.argmin(gap, axis=1)
+    rows = np.arange(len(points))
+    station = arc[lo:hi][k] + along[rows, k]
+    # Past either END of the route a point is not alongside it: carry its
+    # station on beyond the end (or before the start) instead of clamping it
+    # onto the last vertex, so the horizon test can exclude it.
+    raw = (rel[rows, k] * direction[k]).sum(axis=1)
+    last = (lo + k) == len(route) - 2
+    first = (lo + k) == 0
+    station = np.where(last & (raw > length[k]), arc[lo:hi][k] + raw, station)
+    station = np.where(first & (raw < 0.0), arc[lo:hi][k] + raw, station)
+    u = direction[k]
+    offset = u[:, 0] * off[rows, k, 1] - u[:, 1] * off[rows, k, 0]
+    return station, offset
+
+
+def object_chair_points(item):
+    """Chair-frame (forward, left) samples of where an object is, or BROKEN.
+
+    With a profile, each lateral slice runs from its nearest return to the
+    box's far face: the profile keeps only the nearest return per slice, and
+    a route bending round an object can cross it well behind that near face.
+    Without one, the box perimeter - a corridor cannot enter the box without
+    crossing it, and the spacing is finer than any corridor half-width.
+
+    A profile slice that does not read is BROKEN wherever it lies. That is
+    stricter than corridor_reach, which never reads a slice outside its
+    strip, but a route corridor can run through any of them.
+    """
+    box = object_box(item)
+    if box is None:
+        return BROKEN
+    x, y, half_x, half_y = box
+    far = x + half_x
+    profile = parsed_profile(item)
+    if profile is BROKEN:
+        return BROKEN
+    columns = []
+    if profile is not None:
+        try:
+            columns = [(lateral, near) for lateral, near in
+                       slices_in(profile, -math.inf, math.inf)]
+        except (TypeError, ValueError):
+            return BROKEN
+    points = []
+    if columns:
+        depth = max(max(far - near for _, near in columns), 0.0)
+        rows = int(math.ceil(depth / ROUTE_SAMPLE_M)) + 1
+        if rows * len(columns) > ROUTE_MAX_SAMPLES_PER_OBJECT:
+            rows = max(ROUTE_MAX_SAMPLES_PER_OBJECT // len(columns), 2)
+        for lateral, near in columns:
+            top = max(far, near)
+            for k in range(rows):
+                fraction = 0.0 if rows == 1 else k / float(rows - 1)
+                points.append((near + (top - near) * fraction, lateral))
+    else:
+        near = max(0.0, x - half_x)
+        across = max(int(math.ceil(2.0 * half_y / ROUTE_SAMPLE_M)), 1)
+        along = max(int(math.ceil((far - near) / ROUTE_SAMPLE_M)), 1)
+        for k in range(across + 1):
+            lateral = y - half_y + 2.0 * half_y * k / across
+            points += [(near, lateral), (far, lateral)]
+        for k in range(1, along):
+            forward = near + (far - near) * k / along
+            points += [(forward, y - half_y), (forward, y + half_y)]
+    return np.asarray(points, dtype=float)
+
+
+def route_reach(item, frame, half_width_m, lateral_shift_m=0.0):
+    """(blocks, distance, motion) against a RouteFrame corridor.
+
+    The route counterpart of corridor_reach, with the same contract and the
+    same failures: a box that does not parse blocks at zero as MOVING, a
+    profile that does not read blocks at zero keeping its motion (which is
+    what corridor_reach does; geometry_valid already stops it authorising a
+    manoeuvre). distance is travel along the route to the nearest return in
+    the corridor.
+    """
+    if object_box(item) is None:
+        return True, BLOCKED, MOVING
+    motion = object_motion(item)
+    points = object_chair_points(item)
+    if points is BROKEN:
+        return True, BLOCKED, motion
+    ahead, offset = frame.project(points)
+    inside = frame.in_corridor(ahead, offset, half_width_m, lateral_shift_m)
+    if not inside.any():
+        return False, None, motion
+    return True, max(0.0, float(ahead[inside].min())), motion
+
+
 def matching_threats(summary, half_width_m, lateral_shift_m=0.0,
-                     labels=None):
-    """Every matching object overlapping the corridor, nearest first."""
+                     labels=None, route_frame=None):
+    """Every matching object overlapping the corridor, nearest first.
+
+    With route_frame the corridor is the route's (route_reach); without it,
+    or for a shifted corridor, the original straight strip, unchanged.
+    """
     if not summary.usable:
         return [Threat(BLOCKED, MOVING, summary.status or "unusable",
                        directly_observed=False, geometry_valid=False)]
     wanted = None if labels is None else {
         str(label).strip().lower() for label in labels}
+    use_route = route_frame is not None and abs(float(lateral_shift_m)) < 1e-9
     found = []
     for item in summary.objects:
         label = str(item.get("class", "")).strip().lower()
         if wanted is not None and label not in wanted:
             continue
-        blocks, distance, motion = corridor_reach(
-            item, lateral_shift_m, half_width_m)
+        if use_route:
+            blocks, distance, motion = route_reach(
+                item, route_frame, half_width_m)
+        else:
+            blocks, distance, motion = corridor_reach(
+                item, lateral_shift_m, half_width_m)
         if not blocks:
             continue
         box = object_box(item)
@@ -419,6 +646,10 @@ def matching_threats(summary, half_width_m, lateral_shift_m=0.0,
         track_id = item.get("id")
         if not isinstance(track_id, int) or isinstance(track_id, bool):
             track_id = None
+        route_s = route_d = None
+        if use_route and box is not None:
+            ahead, offset = route_frame.project([(box[0], box[1])])
+            route_s, route_d = float(ahead[0]), float(offset[0])
         found.append(Threat(
             distance, motion, str(item.get("class", "")),
             lateral_m=lateral, track_id=track_id,
@@ -426,12 +657,13 @@ def matching_threats(summary, half_width_m, lateral_shift_m=0.0,
             geometry_valid=object_geometry_valid(item),
             centre_forward_m=None if box is None else float(box[0]),
             half_forward_m=None if box is None else float(box[2]),
-            half_lateral_m=None if box is None else float(box[3])))
+            half_lateral_m=None if box is None else float(box[3]),
+            route_s_m=route_s, route_d_m=route_d))
     return sorted(found, key=lambda threat: threat.distance_m)
 
 
 def nearest_threat(summary, half_width_m, lateral_shift_m=0.0,
-                   labels=None):
+                   labels=None, route_frame=None):
     """The nearest matching object overlapping the corridor, or None.
 
     None means nothing is in the way. It never means "could not tell": an
@@ -440,14 +672,15 @@ def nearest_threat(summary, half_width_m, lateral_shift_m=0.0,
     normalized class is in it are considered.
     """
     threats = matching_threats(
-        summary, half_width_m, lateral_shift_m, labels)
+        summary, half_width_m, lateral_shift_m, labels,
+        route_frame=route_frame)
     return threats[0] if threats else None
 
 
 def corridor_obstacle_points(summary, half_width_m, lateral_shift_m=0.0,
                              max_distance_m=None,
                              max_objects=MAX_OBSTACLE_OBJECTS,
-                             exclude_track_ids=()):
+                             exclude_track_ids=(), route_frame=None):
     """(blocks, points) for everything in the way, as geometry.
 
     The planner-facing companion to nearest_threat. That one answers "is
@@ -468,6 +701,12 @@ def corridor_obstacle_points(summary, half_width_m, lateral_shift_m=0.0,
 
     An unusable summary blocks at zero on the centreline, so a caller that
     treats an empty point list as clear road is right to.
+
+    With route_frame, an object's samples within half_width_m of the route
+    ahead, or of the line the chair is on (parallel to the route at its
+    offset), are added to the straight strip's. A planner going round
+    something in a bend has to see what stands round the bend, and the
+    straight strip alone runs off the outside of it.
     """
     if not summary.usable:
         return True, [(BLOCKED, lateral_shift_m)]
@@ -479,6 +718,21 @@ def corridor_obstacle_points(summary, half_width_m, lateral_shift_m=0.0,
         if item.get("id") in excluded:
             continue
         blocks, points = object_points(item, lateral_shift_m, half_width_m)
+        if route_frame is not None and object_box(item) is not None:
+            samples = object_chair_points(item)
+            if samples is BROKEN:
+                blocks, points = True, [(BLOCKED, lateral_shift_m)]
+            else:
+                ahead, offset = route_frame.project(samples)
+                inside = (np.abs(offset) < half_width_m) | \
+                    (np.abs(offset - route_frame.chair_d_m) < half_width_m)
+                inside &= ahead >= 0.0
+                if max_distance_m is not None:
+                    inside &= ahead <= float(max_distance_m)
+                extra = [(float(fx), float(fy))
+                         for fx, fy in samples[inside]]
+                if extra:
+                    blocks, points = True, list(points or []) + extra
         if not blocks or not points:
             continue
         nearest = min(x for x, _ in points)

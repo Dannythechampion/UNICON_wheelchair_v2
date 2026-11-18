@@ -7,3 +7,7 @@ export ROS_MASTER_URI=http://127.0.0.1:11311
 rosservice call /waypoint_follower/start "data: false" 2>/dev/null || true
 rostopic pub -1 /mode_cmd std_msgs/Int16 77 >/dev/null 2>&1 || true
 echo "STOPPED (follower paused, base out of auto mode)."
+
+# After the wheels, never before: the stop is the part that matters.
+DRIVE_LOG_SH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/drive_log.sh"
+[ -f "$DRIVE_LOG_SH" ] && { bash "$DRIVE_LOG_SH" stop || true; }

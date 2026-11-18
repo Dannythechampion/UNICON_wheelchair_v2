@@ -142,8 +142,15 @@ class SmithPredictor:
             yaw.step(self.command_at(t - yaw.dead_s)[1])
         return t
 
-    def predict(self, state, measured_speed, measured_yaw_rate, now_s):
+    def predict(self, state, measured_speed, measured_yaw_rate, now_s,
+                residual_weight=1.0):
         """state (x, y, yaw, v, w) -> the pose one horizon ahead.
+
+        residual_weight scales how much of the carried model error (when the
+        error term is on) is applied over the horizon; the error itself is
+        tracked at full rate either way, so it is warm when the weight rises.
+        The follower schedules it on speed: full where the model is wrong
+        (under the wheels' deadband), none at cruise where it is right.
 
         Speed and yaw rate are returned as measured, not as predicted: they
         are what the command ramp resynchronises from, and a predicted value
@@ -176,13 +183,16 @@ class SmithPredictor:
         yaw_channel = LagChannel(*self.yaw_params)
         speed.output, yaw_channel.output = self.speed.output, self.yaw.output
         x, y, heading = float(state[0]), float(state[1]), float(state[2])
+        weight = min(max(float(residual_weight), 0.0), 1.0)
+        carried_v = weight * self.residual[0]
+        carried_w = weight * self.residual[1]
         t, end_s = self.model_s, self.model_s + self.horizon_s
         while t < end_s - 1e-9:
             t += DT_S
             v = speed.step(self.command_at(t - speed.dead_s)[0]) \
-                + self.residual[0]
+                + carried_v
             w = yaw_channel.step(self.command_at(t - yaw_channel.dead_s)[1]) \
-                + self.residual[1]
+                + carried_w
             mid = heading + 0.5 * w * DT_S
             x += v * math.cos(mid) * DT_S
             y += v * math.sin(mid) * DT_S

@@ -1575,3 +1575,299 @@ def test_latency_mode_picks_how_the_plan_is_led():
     led = follower.led_state(state, 10.0)
     assert led[2] < 0.5 * 0.4 * 0.55
     assert list(led[3:]) == [0.8, 0.4]
+
+
+def test_smith_state_is_published_once_per_plan_as_json():
+    """The bag gets what Smith was given and produced, every cycle."""
+    module, Stamp = load_follower("dwa_follower")
+    follower = module.DwaFollower.__new__(module.DwaFollower)
+    follower.latency_mode = "smith"
+    follower.latency_s = 0.55
+    follower.measured_speed = 0.8
+    follower.measured_yaw_rate = 0.1
+    follower.pose_stamp = Stamp(9.9)
+    follower.wheel_status_stamp = Stamp(9.99)
+    follower.smith = module.SmithPredictor()
+    for i in range(15):
+        follower.smith.on_command(9.7 + 0.02 * i, 0.8, -0.4)
+    anchored = np.array([1.0, 2.0, 0.3, 0.8, 0.1])
+    led = follower.led_state(anchored, 10.0)
+
+    record = follower.smith_state_record(anchored, led, Stamp(10.0))
+    assert record["mode"] == "smith"
+    assert record["pose_age_s"] == pytest.approx(0.1)
+    assert record["anchor"] == pytest.approx(list(anchored))
+    assert record["lead_m"] > 0.0
+    # The right turn on the wire leads the heading right of the measured one.
+    assert record["lead_yaw_deg"] < 0.0
+    assert record["held_v"] == pytest.approx(0.8)
+    assert record["held_w"] == pytest.approx(-0.4)
+    assert record["horizon_s"] == pytest.approx(follower.smith.horizon_s,
+                                                abs=1e-3)
+    for key in ("model_v", "model_w", "resid_v", "resid_w", "n_cmds"):
+        assert key in record
+
+    sent = []
+    follower.smith_state_pub = types.SimpleNamespace(publish=sent.append)
+    module.String = lambda data: types.SimpleNamespace(data=data)
+    follower.publish_smith_state(anchored, led, Stamp(10.0))
+    assert len(sent) == 1
+    assert json.loads(sent[0].data)["held_w"] == pytest.approx(-0.4)
+
+    # A follower built without the publisher (older tests, replays) is quiet,
+    # and a broken publisher never reaches the control loop.
+    del follower.smith_state_pub
+    follower.publish_smith_state(anchored, led, Stamp(10.0))
+    follower.smith_state_pub = types.SimpleNamespace(
+        publish=lambda message: 1 / 0)
+    follower.publish_smith_state(anchored, led, Stamp(10.0))
+
+    follower.latency_mode = "lead"
+    lead = follower.smith_state_record(anchored, anchored, Stamp(10.0))
+    assert lead["horizon_s"] == pytest.approx(0.55)
+    assert "model_v" not in lead
+
+
+# ------------------------------------------------ launch from rest (11-09)
+
+class SteeringPlanner(object):
+    """Plans a moving, turning target; can refuse the first attempt."""
+
+    def __init__(self, refuse_first=False):
+        self.calls = 0
+        self.refuse_first = refuse_first
+
+    def plan(self, state, obstacles=(), speed_cap=None,
+             last_yaw_rate=0.0, last_speed=None,
+             obstacle_floor_m=None, candidate_veto=None):
+        self.calls += 1
+        if self.refuse_first and self.calls == 1:
+            return 0.0, 0.0, "NO_CANDIDATE"
+        return 0.6, 0.3, "OK"
+
+
+def launching(monkeypatch, left=0.0, right=0.0, refuse_first=False):
+    module, follower, published, commanded = dwa_with([], monkeypatch)
+    _m, Stamp = load_follower("dwa_follower")
+    sl = module.StraightLaunch
+    follower.planner = SteeringPlanner(refuse_first)
+    follower.launch = sl()
+    follower.launch_floor_mps = 0.35
+    follower.measured_left = left
+    follower.measured_right = right
+    follower.wheel_status_stamp = Stamp(100.0)
+    return follower, published, commanded
+
+
+def test_a_launch_from_rest_goes_out_at_the_floor_and_straight(monkeypatch):
+    """18:52:33: the ramp crawled 0.02 -> 0.34 m/s with +0.15..+0.20 rad/s
+    on it while one wheel came free first. Now: 0.35 m/s, no yaw."""
+    follower, published, commanded = launching(monkeypatch)
+
+    follower.step()
+
+    command = commanded[-1]
+    assert command.linear.x == pytest.approx(0.35)
+    assert command.angular.z == 0.0
+    assert published[-1].endswith(" LAUNCH")
+
+
+def test_steering_returns_once_both_wheels_turn(monkeypatch):
+    follower, published, commanded = launching(monkeypatch)
+    follower.step()
+    follower.measured_left = follower.measured_right = 0.3
+    follower.current_speed = 0.35
+
+    follower.step()
+
+    assert commanded[-1].angular.z > 0.0
+    assert not published[-1].endswith(" LAUNCH")
+
+
+def test_a_refused_straight_launch_falls_back_to_steering(monkeypatch):
+    """A straight launch is never worth a stop."""
+    follower, published, commanded = launching(monkeypatch,
+                                               refuse_first=True)
+
+    follower.step()
+
+    assert follower.planner.calls == 2
+    assert commanded[-1].linear.x == pytest.approx(0.35)
+    assert commanded[-1].angular.z > 0.0
+    # Disarmed for this launch: the next cycle plans once, steering.
+    follower.step()
+    assert follower.planner.calls == 3
+    assert commanded[-1].angular.z > 0.0
+
+
+def test_rolling_wheels_are_not_a_launch(monkeypatch):
+    follower, published, commanded = launching(monkeypatch, 0.4, 0.4)
+    follower.current_speed = 0.4
+
+    follower.step()
+
+    assert commanded[-1].angular.z > 0.0
+    assert not published[-1].endswith(" LAUNCH")
+
+
+def test_a_coasting_restart_with_one_wheel_down_goes_out_straight(
+        monkeypatch):
+    """18:52:33: the gate let go 1.3 s after stopping, with the wheels still
+    coasting; the accepted zero arms the launch, and the left wheel having
+    dropped under the release speed holds it straight."""
+    follower, published, commanded = launching(monkeypatch, 0.0, 0.11)
+    follower.launch.armed = False
+    follower.current_speed = 0.0
+    follower.measured_speed = 0.06
+    follower.on_accepted_command(STOP)
+
+    follower.step()
+
+    assert follower.launch.armed
+    assert commanded[-1].linear.x == pytest.approx(0.35)
+    assert commanded[-1].angular.z == 0.0
+    assert published[-1].endswith(" LAUNCH")
+
+
+def test_the_smith_record_carries_the_launch_switches(monkeypatch):
+    follower, _published, _commanded = launching(monkeypatch)
+    follower.latency_mode = "off"
+    state = np.array([10.0, 0.0, 0.0, 0.0, 0.0])
+    module, Stamp = load_follower("dwa_follower")
+    record = follower.smith_state_record(state, state, Stamp(100.0))
+    assert record["launch_floor"] == pytest.approx(0.35)
+    assert record["straight_launch"] is True
+    assert record["launch_armed"] is True
+    assert "wheel_l" in record and "wheel_r" in record
+
+
+# ------------------------------------------- B1 / B2 steering limits (11-11)
+
+class RangeRecordingPlanner(SteeringPlanner):
+    def plan(self, *a, yaw_range_for=None, **k):
+        self.yaw_range_for = yaw_range_for
+        return super(RangeRecordingPlanner, self).plan(*a, **k)
+
+
+def limited(monkeypatch, current_speed=0.6, last_w=0.0, left=0.6, right=0.6):
+    follower, published, commanded = launching(monkeypatch, left, right)
+    follower.planner = RangeRecordingPlanner()
+    follower.launch.armed = False
+    follower.current_speed = current_speed
+    follower.last_yaw_rate = last_w
+    follower.curvature_max = 0.9
+    follower.yaw_accel = 0.8
+    return follower, published, commanded
+
+
+def test_the_planner_gets_the_window_and_the_ramp_matches_it(monkeypatch):
+    follower, _published, commanded = limited(monkeypatch, 0.6, -0.30)
+
+    follower.step()
+
+    # Window = what the 0.8 rad/s^2 ramp reaches in 1 s from -0.30.
+    lo, hi = follower.planner.yaw_range_for(0.6)
+    assert (lo, hi) == (pytest.approx(-0.5), pytest.approx(0.5))
+    # The planner asked for +0.3; the ramp moves 0.08 per 0.1 s cycle.
+    assert commanded[-1].angular.z == pytest.approx(-0.22)
+
+
+def test_a_full_reversal_is_out_of_the_window(monkeypatch):
+    follower, _p, _c = limited(monkeypatch, 0.6, -0.45)
+    lo, hi = follower.yaw_range_for(0.1)(0.6)
+    assert hi == pytest.approx(0.35)
+
+
+class LimitedOffBandPlanner(SteeringPlanner):
+    """OFF_BAND inside the steering limits, a turn without them."""
+
+    def plan(self, *a, yaw_range_for=None, **k):
+        self.calls += 1
+        if yaw_range_for is not None:
+            return 0.0, 0.0, "OFF_BAND"
+        return 0.6, 0.45, "OK"
+
+
+def test_steering_limits_never_cause_a_stop(monkeypatch):
+    """11-11 sim: stopped 59 deg off the route, nothing near-straight was in
+    the band; the limits must give way rather than hold OFF_BAND forever."""
+    follower, published, commanded = limited(monkeypatch, 0.35, 0.0)
+    follower.planner = LimitedOffBandPlanner()
+
+    follower.step()
+
+    assert "STEER_RELAXED" in published[-1]
+    assert commanded[-1] != "STOP"
+    # Planned and ramped without the limits: the old 1.5 rad/s^2 slope.
+    assert commanded[-1].angular.z == pytest.approx(0.15)
+
+
+def test_a_target_inside_the_window_goes_out_unchanged(monkeypatch):
+    follower, _p, _c = limited(monkeypatch, 0.6, -0.30)
+    speed, w, _ = follower.command_for_target(0.6, -0.25, 0.1)
+    assert w == pytest.approx(-0.25)
+
+
+def test_b1_caps_the_command_on_the_speed_sent(monkeypatch):
+    follower, _p, _c = limited(monkeypatch, 0.35, 0.30)
+    speed, w, _ = follower.command_for_target(0.35, 0.5, 0.1)
+    assert speed == pytest.approx(0.35)
+    assert w == pytest.approx(0.315)
+
+
+def test_steering_limits_off_is_the_old_ramp(monkeypatch):
+    follower, _p, _c = limited(monkeypatch, 0.6, -0.30)
+    follower.curvature_max = 0.0
+    follower.yaw_accel = 0.0
+    assert follower.yaw_range_for(0.1) is None
+    _speed, w, _ = follower.command_for_target(0.6, 0.5, 0.1)
+    # YAW_SLEW_RPS2 1.5 over the 0.1 s step.
+    assert w == pytest.approx(-0.30 + 0.15)
+
+
+# ------------------------------------------ Smith model error, IMU (11-11)
+
+def test_residual_weight_is_full_under_the_deadband_and_off_at_cruise():
+    module, _Stamp = load_follower("dwa_follower")
+    w = module.residual_weight
+    assert w(0.0) == 1.0 and w(0.3) == 1.0
+    assert w(0.4) == pytest.approx(0.5)
+    assert w(0.5) == 0.0 and w(0.8) == 0.0
+
+
+def residual_follower(mode, imu_age_s=0.05, speed=0.2):
+    module, Stamp = load_follower("dwa_follower")
+    follower = module.DwaFollower.__new__(module.DwaFollower)
+    follower.smith_residual = mode
+    follower.measured_yaw_rate = 0.10
+    follower.measured_speed = speed
+    follower.imu_gz = 0.40
+    follower.imu_stamp = None if imu_age_s is None else Stamp(100.0 - imu_age_s)
+    return follower
+
+
+def test_imu_mode_measures_the_error_against_the_imu():
+    follower = residual_follower("imu")
+    assert follower.residual_inputs(100.0) == (pytest.approx(0.40), 1.0)
+    assert follower.residual_src == "imu"
+
+
+def test_a_stale_imu_falls_back_to_the_wheels():
+    follower = residual_follower("imu", imu_age_s=0.5)
+    yaw, weight = follower.residual_inputs(100.0)
+    assert yaw == pytest.approx(0.10) and follower.residual_src == "wheel"
+    follower = residual_follower("imu", imu_age_s=None)
+    assert follower.residual_inputs(100.0)[0] == pytest.approx(0.10)
+
+
+def test_off_carries_nothing_and_cruise_carries_nothing():
+    assert residual_follower("off").residual_inputs(100.0)[1] == 0.0
+    assert residual_follower("imu", speed=0.7).residual_inputs(100.0)[1] == 0.0
+
+
+def test_a_follower_built_without_the_switch_behaves_as_before():
+    module, Stamp = load_follower("dwa_follower")
+    follower = module.DwaFollower.__new__(module.DwaFollower)
+    follower.measured_yaw_rate = 0.1
+    follower.measured_speed = 0.2
+    assert follower.residual_inputs(100.0) == (pytest.approx(0.1), 0.0)

@@ -130,3 +130,35 @@ def test_history_is_bounded():
     feed(predictor, 0.0, 30.0, 0.8, 0.0)
 
     assert predictor.stamps[-1] - predictor.stamps[0] <= lag.HISTORY_S
+
+
+def test_residual_weight_scales_only_what_is_carried_over_the_horizon():
+    """The follower applies the model error in full under the deadband and
+    not at cruise; the error itself keeps being tracked either way."""
+    full = lag.SmithPredictor(residual_tau_s=0.4)
+    none = lag.SmithPredictor(residual_tau_s=0.4)
+    led_full = drive(full, 0.0, 6.0, (0.3, 0.0), (0.3, 0.1))
+    t = 6.0
+    led_none = None
+    t2 = 0.0
+    while t2 < 6.0 - 1e-9:
+        feed(none, t2, t2 + 0.1, 0.3, 0.0)
+        t2 += 0.1
+        led_none = none.predict([0.0, 0.0, 0.0, 0.3, 0.1], 0.3, 0.1, t2,
+                                residual_weight=0.0)
+    assert none.residual[1] == pytest.approx(full.residual[1], abs=1e-9)
+    assert led_full[2] == pytest.approx(0.1 * full.horizon_s, abs=0.005)
+    assert led_none[2] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_default_weight_is_the_old_prediction():
+    a = lag.SmithPredictor(residual_tau_s=0.4)
+    b = lag.SmithPredictor(residual_tau_s=0.4)
+    la = drive(a, 0.0, 3.0, (0.8, 0.2), (0.8, 0.25))
+    t = 0.0
+    while t < 3.0 - 1e-9:
+        feed(b, t, t + 0.1, 0.8, 0.2)
+        t += 0.1
+        lb = b.predict([0.0, 0.0, 0.0, 0.8, 0.25], 0.8, 0.25, t,
+                       residual_weight=1.0)
+    assert list(la) == pytest.approx(list(lb))

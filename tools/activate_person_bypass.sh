@@ -55,6 +55,12 @@ LATENCY_S="$(rosparam get /waypoint_follower/latency_s 2>/dev/null || echo 0.55)
 LATENCY_MODE="${LATENCY_MODE:-$(rosparam get /waypoint_follower/latency_mode 2>/dev/null || echo smith)}"
 REQUIRE_GPU="${REQUIRE_GPU:-$(rosparam get /waypoint_follower/require_gpu 2>/dev/null || echo true)}"
 PREFER_GPU="${PREFER_DWA_GPU:-$(rosparam get /waypoint_follower/prefer_gpu 2>/dev/null || echo true)}"
+# Carry the launch switches the stack was started with (straight_launch.py).
+LAUNCH_FLOOR_MPS="${LAUNCH_FLOOR_MPS:-$(rosparam get /waypoint_follower/launch_floor_mps 2>/dev/null || echo 0.35)}"
+STRAIGHT_LAUNCH="${STRAIGHT_LAUNCH:-$(rosparam get /waypoint_follower/straight_launch 2>/dev/null || echo false)}"
+DWA_CURV_MAX="${DWA_CURV_MAX:-$(rosparam get /waypoint_follower/curvature_max 2>/dev/null || echo 0.9)}"
+DWA_YAW_ACCEL="${DWA_YAW_ACCEL:-$(rosparam get /waypoint_follower/yaw_accel 2>/dev/null || echo 0.8)}"
+SMITH_RESIDUAL="${SMITH_RESIDUAL:-$(rosparam get /waypoint_follower/smith_residual 2>/dev/null || echo off)}"
 for value in "$ROUTE" "$BAND" "$DRIVABLE_MASK"; do
   [ -f "$value" ] || fail "runtime asset disappeared: $value"
 done
@@ -129,6 +135,11 @@ setsid nohup env $SINGLE_THREAD_ENV \
   _safety_policies:="$SAFETY_POLICIES" \
   _latency_s:="$LATENCY_S" \
   _latency_mode:="$LATENCY_MODE" \
+  _launch_floor_mps:="$LAUNCH_FLOOR_MPS" \
+  _straight_launch:="$STRAIGHT_LAUNCH" \
+  _curvature_max:="$DWA_CURV_MAX" \
+  _yaw_accel:="$DWA_YAW_ACCEL" \
+  _smith_residual:="$SMITH_RESIDUAL" \
   _prefer_gpu:="$PREFER_GPU" \
   _require_gpu:="$REQUIRE_GPU" \
   _cmd_topic:=/cmd_vel_planned \
@@ -185,7 +196,7 @@ setsid nohup rosbag record --lz4 \
   -O "$HOME/localization_trials/person_bypass_$(date +%Y%m%d_%H%M%S)" \
   /person_bypass/permit /waypoint_follower/status \
   /semantic_safety/status /safety_gate/status \
-  /cmd_vel_planned /cmd_vel_raw /cmd_vel_gated \
+  /cmd_vel_planned /cmd_vel_raw /cmd_vel_gated /dwa_follower/smith_state \
   > "$LOG/live_person_bypass_blackbox.log" 2>&1 < /dev/null &
 
 cat <<EOF

@@ -35,3 +35,16 @@ def test_tip_detection_was_deliberately_removed_not_forgotten():
     assert "was removed" in text
     assert "should_trip" not in text
     assert "self.tripped" not in text
+
+
+def test_the_inner_wheel_clamp_is_applied_to_what_is_published():
+    text = guard_text()
+    assert "no_reverse_yaw(out.linear.x, out.angular.z" in text
+    assert '"~no_reverse", True' in text
+
+
+def test_the_ramp_resumes_from_the_wheel_report():
+    text = guard_text()
+    assert "resume_speed(self.current_speed" in text
+    assert '"/wheel_status"' in text
+    assert '"~resume_from_wheels", True' in text

@@ -229,6 +229,66 @@ case "$BASE_TURN_BOOST" in
   *) echo "ERROR: BASE_TURN_BOOST must be true or false, got '$BASE_TURN_BOOST'" >&2
      exit 65 ;;
 esac
+# Launch after a stop (straight_launch.py, 2026-11-11).
+# LAUNCH_FLOOR_MPS: the first command after a stop goes straight to this
+#   speed, in the follower and in tip_guard; 0 restores the plain ramp
+#   through the ~0.30 m/s wheel deadband.
+# STRAIGHT_LAUNCH: after a stop, hold the yaw rate at zero until both wheels
+#   report >= 0.25 m/s (or 2 s). Default false since 11-11: in the sim it
+#   drove a chair left 50 deg off the route further off (cte 0.30 -> 0.63 m).
+LAUNCH_FLOOR_MPS="${LAUNCH_FLOOR_MPS:-0.35}"
+STRAIGHT_LAUNCH="${STRAIGHT_LAUNCH:-false}"
+case "$LAUNCH_FLOOR_MPS" in
+  0|0.0|0.30|0.35|0.40) ;;
+  *) echo "ERROR: LAUNCH_FLOOR_MPS must be 0, 0.30, 0.35 or 0.40, got '$LAUNCH_FLOOR_MPS'" >&2
+     exit 65 ;;
+esac
+case "$STRAIGHT_LAUNCH" in
+  true|false) ;;
+  *) echo "ERROR: STRAIGHT_LAUNCH must be true or false, got '$STRAIGHT_LAUNCH'" >&2
+     exit 65 ;;
+esac
+# Low-speed steering limits (dwa_core.yaw_range, 2026-11-11).
+# DWA_CURV_MAX: |w| <= this * commanded speed (1/m); 0 = off. Default 0.9.
+# DWA_YAW_ACCEL: candidate window and ramp slope for w (rad/s^2); 0 = off,
+#   which restores the full +-0.5 candidate set and the 1.5 rad/s^2 ramp.
+DWA_CURV_MAX="${DWA_CURV_MAX:-0.9}"
+DWA_YAW_ACCEL="${DWA_YAW_ACCEL:-0.8}"
+for pair in "DWA_CURV_MAX=$DWA_CURV_MAX" "DWA_YAW_ACCEL=$DWA_YAW_ACCEL"; do
+  case "${pair#*=}" in
+    *[!0-9.]*|*.*.*|''|.)
+      echo "ERROR: ${pair%%=*} must be a non-negative number, got '${pair#*=}'" >&2
+      exit 65 ;;
+  esac
+done
+echo "  launch: floor $LAUNCH_FLOOR_MPS m/s, straight $STRAIGHT_LAUNCH; base turn boost $BASE_TURN_BOOST"
+echo "  steering: curvature max $DWA_CURV_MAX 1/m, yaw accel $DWA_YAW_ACCEL rad/s^2 (0 = off)"
+# Smith model error, low speed only (dwa_follower SMITH_RESIDUAL_MODES):
+# imu | wheel | off (default since 11-11: mixed in the sim, field A/B first).
+SMITH_RESIDUAL="${SMITH_RESIDUAL:-off}"
+case "$SMITH_RESIDUAL" in
+  imu|wheel|off) ;;
+  *) echo "ERROR: SMITH_RESIDUAL must be imu, wheel or off, got '$SMITH_RESIDUAL'" >&2
+     exit 65 ;;
+esac
+echo "  smith model error: $SMITH_RESIDUAL (applied under 0.3 m/s, none over 0.5)"
+# Final stage: never command the inner wheel backwards (tip_guard_policy.
+# no_reverse_yaw, 2026-11-11: the 11-09 crest spins). true (default) | false.
+TIP_NO_REVERSE="${TIP_NO_REVERSE:-true}"
+case "$TIP_NO_REVERSE" in
+  true|false) ;;
+  *) echo "ERROR: TIP_NO_REVERSE must be true or false, got '$TIP_NO_REVERSE'" >&2
+     exit 65 ;;
+esac
+# Final stage: after a zero, resume from the wheels' measured speed instead
+# of ramping up from 0 under a still-rolling chair (resume_speed). true|false.
+TIP_RESUME="${TIP_RESUME:-true}"
+case "$TIP_RESUME" in
+  true|false) ;;
+  *) echo "ERROR: TIP_RESUME must be true or false, got '$TIP_RESUME'" >&2
+     exit 65 ;;
+esac
+echo "  tip_guard no-reverse yaw: $TIP_NO_REVERSE, resume from wheels: $TIP_RESUME"
 # OpenBLAS sizes its thread pool to the core count and then SPIN-WAITS
 # those threads between calls. Every numpy operation in the control-loop
 # nodes is tiny - a 25-step horizon, a few hundred band stations - so the
@@ -363,7 +423,7 @@ if [ "$KEEP_LOCALIZATION" = "1" ]; then
   for pattern in '[r]oslaunch base_model' '[r]osbag record' '[a]uto_initial_pose' \
                  '[s]afety_gate' '[t]ip_guard' '[w]aypoint_follower' '[m]pc_follower' \
                  '[d]wa_follower' '[o]bstacle_clusters' '[r]oute_identity_publisher' \
-                 '[w]heel_cmd' '[s]top_watchdog'; do
+                 '[w]heel_cmd' '[s]top_watchdog' '[d]rive_logger'; do
     pkill -f "$pattern" 2>/dev/null || true
   done
   for _ in $(seq 1 10); do
@@ -380,7 +440,7 @@ if [ "$KEEP_LOCALIZATION" = "1" ]; then
   sleep 2
 fi
 if [ "$SHADOW_QA" != "1" ] && [ "$KEEP_LOCALIZATION" != "1" ]; then
-for pattern in '[r]oslaunch' '[r]osbag record' '[f]astlio_mapping' '[a]uto_initial_pose' '[s]afety_gate' '[t]ip_guard' '[w]aypoint_follower' '[m]pc_follower' '[d]wa_follower' '[o]bstacle_clusters' '[r]oute_identity_publisher' '[m]oving_icp_localizer' '[b]ounded_cloud_preview' '[m]ap_preview_publisher' '[l]ivox_ros_driver2' '[v]ectornav' '[w]heel_cmd' '[l]ocalization_state_marker' '[r]eference_marker' '[r]viz'; do
+for pattern in '[r]oslaunch' '[r]osbag record' '[f]astlio_mapping' '[a]uto_initial_pose' '[s]afety_gate' '[t]ip_guard' '[w]aypoint_follower' '[m]pc_follower' '[d]wa_follower' '[o]bstacle_clusters' '[r]oute_identity_publisher' '[m]oving_icp_localizer' '[b]ounded_cloud_preview' '[m]ap_preview_publisher' '[l]ivox_ros_driver2' '[v]ectornav' '[w]heel_cmd' '[l]ocalization_state_marker' '[r]eference_marker' '[r]viz' '[d]rive_logger'; do
   pkill -f "$pattern" 2>/dev/null || true
 done
 # Confirm they are gone rather than assuming a fixed sleep did it. Same
@@ -693,6 +753,10 @@ setsid nohup env $SINGLE_THREAD_ENV \
 setsid nohup rosrun static_livox_localization stop_watchdog.py \
   > "$LOG/live_stopwatchdog.log" 2>&1 < /dev/null &
 setsid nohup rosrun static_livox_localization tip_guard.py \
+  _launch_floor_mps:="$LAUNCH_FLOOR_MPS" \
+  _no_reverse:="$TIP_NO_REVERSE" \
+  _resume_from_wheels:="$TIP_RESUME" \
+  _wheel_separation_m:="$BASE_WHEEL_SEPARATION_M" \
   > "$LOG/live_tipguard.log" 2>&1 < /dev/null &
 # The follower steers around what this node reports as parked and waits for
 # what it reports as moving, so it starts BEFORE the follower and the follower
@@ -716,6 +780,11 @@ setsid nohup env $SINGLE_THREAD_ENV \
   _safety_policies:="$SAFETY_POLICIES" \
   _latency_s:="$LATENCY_S" \
   _latency_mode:="$LATENCY_MODE" \
+  _launch_floor_mps:="$LAUNCH_FLOOR_MPS" \
+  _straight_launch:="$STRAIGHT_LAUNCH" \
+  _curvature_max:="$DWA_CURV_MAX" \
+  _yaw_accel:="$DWA_YAW_ACCEL" \
+  _smith_residual:="$SMITH_RESIDUAL" \
   > "$LOG/live_follower.log" 2>&1 < /dev/null &
 
 echo "[7/7] black-box recorder"
@@ -731,7 +800,7 @@ setsid nohup rosbag record --lz4 \
   /waypoint_follower/status /tip_guard/status /Odometry /livox/imu \
   /perception/objects_summary /perception/dynamic_boxes /perception/objects \
   /waypoint_follower/route_identity /uart_tx_diag /stop_watchdog/alarm /safety_gate/status \
-  /field_mark \
+  /field_mark /dwa_follower/smith_state \
   > "$LOG/live_blackbox.log" 2>&1 < /dev/null &
 
 echo ""

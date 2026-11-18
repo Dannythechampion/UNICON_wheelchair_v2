@@ -166,6 +166,7 @@ install(
     scripts/scan_accumulator.py
     scripts/shadow_qa_contract.py
     scripts/tip_guard_policy.py
+    scripts/straight_launch.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 install(

@@ -109,6 +109,44 @@ case "$LATENCY_MODE" in
   lead|smith|off) ;;
   *) fail "LATENCY_MODE must be lead, smith or off, got '$LATENCY_MODE'" ;;
 esac
+# Launch after a stop (straight_launch.py); same meaning and defaults as in
+# start_wheelchair_localization.sh, which this script runs first.
+LAUNCH_FLOOR_MPS="${LAUNCH_FLOOR_MPS:-0.35}"
+STRAIGHT_LAUNCH="${STRAIGHT_LAUNCH:-false}"
+case "$LAUNCH_FLOOR_MPS" in
+  0|0.0|0.30|0.35|0.40) ;;
+  *) fail "LAUNCH_FLOOR_MPS must be 0, 0.30, 0.35 or 0.40, got '$LAUNCH_FLOOR_MPS'" ;;
+esac
+case "$STRAIGHT_LAUNCH" in
+  true|false) ;;
+  *) fail "STRAIGHT_LAUNCH must be true or false, got '$STRAIGHT_LAUNCH'" ;;
+esac
+# Low-speed steering limits (dwa_core.yaw_range); same meaning and defaults
+# as in start_wheelchair_localization.sh. 0 = off.
+DWA_CURV_MAX="${DWA_CURV_MAX:-0.9}"
+DWA_YAW_ACCEL="${DWA_YAW_ACCEL:-0.8}"
+for pair in "DWA_CURV_MAX=$DWA_CURV_MAX" "DWA_YAW_ACCEL=$DWA_YAW_ACCEL"; do
+  case "${pair#*=}" in
+    *[!0-9.]*|*.*.*|''|.)
+      fail "${pair%%=*} must be a non-negative number, got '${pair#*=}'" ;;
+  esac
+done
+SMITH_RESIDUAL="${SMITH_RESIDUAL:-off}"
+case "$SMITH_RESIDUAL" in
+  imu|wheel|off) ;;
+  *) fail "SMITH_RESIDUAL must be imu, wheel or off, got '$SMITH_RESIDUAL'" ;;
+esac
+TIP_NO_REVERSE="${TIP_NO_REVERSE:-true}"
+case "$TIP_NO_REVERSE" in
+  true|false) ;;
+  *) fail "TIP_NO_REVERSE must be true or false, got '$TIP_NO_REVERSE'" ;;
+esac
+TIP_RESUME="${TIP_RESUME:-true}"
+case "$TIP_RESUME" in
+  true|false) ;;
+  *) fail "TIP_RESUME must be true or false, got '$TIP_RESUME'" ;;
+esac
+export LAUNCH_FLOOR_MPS STRAIGHT_LAUNCH DWA_CURV_MAX DWA_YAW_ACCEL SMITH_RESIDUAL TIP_NO_REVERSE TIP_RESUME
 VN_IMU="${VN_IMU:-0}"
 case "$VN_IMU" in 0) BODY_FRAME_PROFILE=builtin ;; 1) BODY_FRAME_PROFILE=vn100 ;;
   *) fail "VN_IMU must be 0 or 1" ;; esac
@@ -315,6 +353,11 @@ if [ "$PREFER_DWA_GPU" = "true" ]; then
     _safety_policies:="$SAFETY_POLICIES" \
     _latency_s:="$LATENCY_S" \
     _latency_mode:="$LATENCY_MODE" \
+    _launch_floor_mps:="$LAUNCH_FLOOR_MPS" \
+    _straight_launch:="$STRAIGHT_LAUNCH" \
+    _curvature_max:="$DWA_CURV_MAX" \
+    _yaw_accel:="$DWA_YAW_ACCEL" \
+    _smith_residual:="$SMITH_RESIDUAL" \
     _prefer_gpu:=true \
     _require_gpu:="$REQUIRE_GPU" \
     _cmd_topic:=/cmd_vel_planned \
@@ -331,6 +374,11 @@ else
     _safety_policies:="$SAFETY_POLICIES" \
     _latency_s:="$LATENCY_S" \
     _latency_mode:="$LATENCY_MODE" \
+    _launch_floor_mps:="$LAUNCH_FLOOR_MPS" \
+    _straight_launch:="$STRAIGHT_LAUNCH" \
+    _curvature_max:="$DWA_CURV_MAX" \
+    _yaw_accel:="$DWA_YAW_ACCEL" \
+    _smith_residual:="$SMITH_RESIDUAL" \
     _prefer_gpu:=false _require_gpu:=false \
     _cmd_topic:=/cmd_vel_planned \
     > "$LOG/live_hybrid_dwa.log" 2>&1 < /dev/null &
@@ -372,6 +420,10 @@ say "final-stage relay, downstream of terrain guard"
 setsid nohup rosrun static_livox_localization tip_guard.py \
   __name:=tip_guard \
   /cmd_vel_gated:=/cmd_vel_terrain_safe \
+  _launch_floor_mps:="$LAUNCH_FLOOR_MPS" \
+  _no_reverse:="$TIP_NO_REVERSE" \
+  _resume_from_wheels:="$TIP_RESUME" \
+  _wheel_separation_m:="${BASE_WHEEL_SEPARATION_M:-0.54}" \
   > "$LOG/live_tipguard.log" 2>&1 < /dev/null &
 
 for topic in /perception/hybrid_status /semantic_safety/status \

@@ -549,7 +549,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.5
     },
     {
       "x": 168.525,
@@ -562,7 +563,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.5
     },
     {
       "x": 168.036,
@@ -575,7 +577,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.5
     },
     {
       "x": 167.547,
@@ -588,7 +591,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.5
     },
     {
       "x": 167.059,
@@ -601,7 +605,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.5
     },
     {
       "x": 166.57,
@@ -614,7 +619,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.5
     },
     {
       "x": 166.082,
@@ -627,7 +633,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.5
     },
     {
       "x": 165.594,
@@ -640,7 +647,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.5
     },
     {
       "x": 165.107,
@@ -653,7 +661,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.5
     },
     {
       "x": 164.62,
@@ -965,7 +974,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.6
     },
     {
       "x": 153.064,
@@ -978,7 +988,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.6
     },
     {
       "x": 152.591,
@@ -991,7 +1002,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.6
     },
     {
       "x": 152.118,
@@ -1004,7 +1016,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.6
     },
     {
       "x": 151.645,
@@ -1017,7 +1030,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.6
     },
     {
       "x": 151.171,
@@ -1030,7 +1044,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.6
     },
     {
       "x": 150.698,
@@ -1043,7 +1058,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.6
     },
     {
       "x": 150.223,
@@ -1056,7 +1072,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.6
     },
     {
       "x": 149.748,
@@ -1069,7 +1086,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.6
     },
     {
       "x": 149.273,
@@ -1082,7 +1100,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.6
     },
     {
       "x": 148.796,
@@ -1095,7 +1114,8 @@
       "left_kind": "manual_boundary_unverified",
       "right_kind": "manual_boundary_unverified",
       "left_rise_m": 0.0,
-      "right_rise_m": 0.0
+      "right_rise_m": 0.0,
+      "max_speed_mps": 0.6
     },
     {
       "x": 148.318,
