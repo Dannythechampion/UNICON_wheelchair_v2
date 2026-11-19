@@ -1,3 +1,81 @@
+## 빠른 실행 (DWA / PID)
+
+모든 명령은 **NUC 터미널**에서 실행합니다 (노트북에서 `ssh nuc`). 새 터미널을 열면 그 터미널에서도 먼저 NUC에 접속하세요.
+
+> [!WARNING]
+> - 주행 중에는 탑승자가 항상 조이스틱에 손을 올려 둡니다. 조이스틱을 움직이면 수동 모드로 바뀝니다.
+> - 출발 전 E-STOP 확인: `rostopic echo /wheel_status`의 `data[1]`이 65(자동) ↔ 77(수동)로 바뀌는지 봅니다.
+> - **DWA와 PID는 동시에 띄우지 않습니다.** 한쪽 스택을 완전히 내린 뒤 다른 쪽을 시작하세요.
+
+경로 이름: `A_to_D4`, `A_to_D5`, `D4_to_A`, `D4_to_D5`, `D5_to_A`, `D5_to_D4`
+(A = 애지문, D4 = 정몽구센터, D5 = 제2공학관)
+
+### DWA로 주행
+
+`~/wheelchair_deploys/current`에 선택된 배포본(이 저장소 `main`)으로 실행합니다. 배포본 바꾸기: `bash ~/use_deploy.sh <배포본 이름>`.
+
+```bash
+# 0) 점검 (읽기 전용): 배포본 검증, 지도 해시, ~/ 래퍼 일치
+bash ~/wheelchair_deploys/current/source-linux/tools/route2_intern_check.sh pre
+
+# 1) 스택 시작: 출발지/도착지 지정 (예: A → D5). 추종기는 PAUSED 상태로 올라옵니다
+~/start_route2_intern.sh A D5
+
+# 2) 점검 (읽기 전용): DWA 추종기, 경로, 위치추정 TRACKING, 경로 시작점 3 m 이내인지
+bash ~/wheelchair_deploys/current/source-linux/tools/route2_intern_check.sh running A_to_D5
+
+# 3) 주행 시작
+~/go.sh
+
+# 4) 주행 정지 (조이스틱을 움직여도 정지)
+~/stop.sh
+
+# 5) 스택 전체 종료 (그날 주행을 모두 마친 뒤)
+~/stop_stack.sh
+```
+
+- 다음 구간은 1)부터 다시 (예: `~/start_route2_intern.sh D5 A`). 두 번째 구간부터는 위치추정을 유지한 채 경로만 바뀝니다. 거부되면 `KEEP_LOCALIZATION=0 ~/start_route2_intern.sh D5 A`.
+- bag은 스택 시작과 함께 `~/localization_trials/`에 자동 기록됩니다: `blackbox_*.bag`, `hybrid_*.bag`, `person_bypass_*.bag`, 그리고 `45c6449` 이후 배포본부터 전체 토픽 `all_topics_*.bag` (끄기: `ALL_TOPICS_BAG=0`).
+- 지연 보상 바꾸기: `LATENCY_MODE=lead ~/start_route2_intern.sh A D5` (기본값 `smith`).
+
+### PID(FF-PID)로 주행
+
+`~/wheelchair_deploys/ffpid`에 배포된 `feature/ffpid` 브랜치 코드로 실행합니다 (`main`에는 없습니다).
+
+```bash
+P="$HOME/wheelchair_deploys/ffpid/source-linux/src/pid/scripts"
+
+# 1) READY 시작: 센서, 위치추정, 인지, 휠 베이스를 올립니다 (자동 주행은 아직 시작 안 함)
+bash "$P/pid_ready.sh" start
+
+# 2) READY 상태 확인
+bash "$P/pid_ready.sh" status
+
+# 3) 주행 시작: 경로 이름 지정. 이 터미널은 주행 중 계속 쓰이니 닫지 마세요
+bash "$P/pid_drive.sh" A_to_D5
+
+# 4) 주행 정지: 새 터미널에서 NUC에 접속한 뒤 실행 (조이스틱을 움직여도 정지)
+bash "$HOME/wheelchair_deploys/ffpid/source-linux/src/pid/scripts/pid_stop.sh"
+
+# 5) READY 종료: 모든 주행을 마친 뒤. bag도 이때 닫힙니다
+bash "$P/pid_ready.sh" stop
+```
+
+모니터링 (각각 새 터미널):
+
+```bash
+bash "$HOME/wheelchair_deploys/ffpid/source-linux/src/pid/scripts/pid_ready.sh" watch
+source /opt/ros/noetic/setup.bash && python3 -u "$HOME/wheelchair_deploys/ffpid/source-linux/src/pid/scripts/pid_safety_watch.py"
+```
+
+- 다음 구간은 READY를 내리지 않고 3)만 다시 실행합니다 (예: `bash "$P/pid_drive.sh" D5_to_A`).
+- bag은 READY 시작과 함께 `~/pid_ready_logs/<세션>/`에 자동 기록됩니다.
+  - `ready_topics_*.bag`: 주요 토픽만 담은 경량 bag. READY 종료 후 주행별로 잘려 `~/pid_drive_bags/`에 정리됩니다.
+  - `all_topics_*.bag`: 전체 토픽 (`rosbag record -a --lz4`, 2 GB/15분 분할). 빈 공간이 10 GB 미만이면 건너뜁니다. 끄기: `PID_BAG_ALL=0 bash "$P/pid_ready.sh" start`
+- 녹화 상태: `bash "$P/pid_ready_bag.sh" status`
+
+---
+
 <p align="center">
   <img src="docs/assets/hero-route.png" alt="Hanyang University Unicon Lab autonomous wheelchair" width="100%" />
 </p>
