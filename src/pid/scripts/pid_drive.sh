@@ -13,6 +13,7 @@ CHECK="$SCRIPT_DIR/pid_drive_check.py"
 MONITOR="$SCRIPT_DIR/pid_ready_monitor.py"
 NODE="$SCRIPT_DIR/ff_pid_node.py"
 SAFETY="$SCRIPT_DIR/pid_safety.py"
+ASTAR="$SCRIPT_DIR/pid_astar_planner.py"
 BAG_HELPER="$SCRIPT_DIR/pid_ready_bag.sh"
 STOP="$SCRIPT_DIR/pid_stop.sh"
 
@@ -133,10 +134,37 @@ for ((i=0; i<35; i++)); do
 done
 [[ "$ready" == 1 ]] || { bash "$STOP" >/dev/null 2>&1 || true; fail "FF-PD 노드 시작 실패. 로그: $LOG"; }
 
-# Static A* route replanning is temporarily disabled for ALL drives.
-# Obstacle detection, Safety STOP/SLOW and normal-route resume remain active.
-# Intentionally ignore PID_ENABLE_ASTAR; do not start pid_astar_planner.
 REPLAN_ENABLED=false
+# A* is enabled for normal DRIVE by default; set PID_ENABLE_ASTAR=false to disable.
+if [[ "${PID_ENABLE_ASTAR:-true}" == "true" && "$TEST_CLEAR" != "true" ]]; then
+  REPLAN_ENABLED=true
+  printf '[WARN] Experimental autonomous A* detour enabled. Unvalidated on real wheelchair.\n' >&2
+fi
+if [[ "$REPLAN_ENABLED" == "true" ]]; then
+# The optional occupancy service is published by the patched existing
+# geometric LiDAR node. Never arm experimental A* without this provider.
+timeout 3 rosservice info /perception/pid_occupancy_snapshot >/dev/null 2>&1 || {
+  bash "$STOP" >/dev/null 2>&1 || true
+  fail "A* 점유 셀 서비스가 없습니다. 팀 인식 노드 연동 패치를 먼저 적용하세요."
+}
+ASTAR_LOG="$RUN_DIR/pid_astar_${ROUTE}_$(date +%Y%m%d_%H%M%S).log"
+setsid nohup env OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+  python3 -u "$ASTAR" > "$ASTAR_LOG" 2>&1 < /dev/null &
+ASTAR_PID=$!
+printf '%s\n' "$ASTAR_PID" > "$RUN_DIR/pid_astar_planner.pid"
+astar_ready=0
+for ((i=0; i<35; i++)); do
+  if timeout 2 rosnode list 2>/dev/null | grep -Fx /pid_astar_planner >/dev/null; then
+    astar_ready=1; break
+  fi
+  kill -0 "$ASTAR_PID" 2>/dev/null || break
+  sleep 0.3
+done
+[[ "$astar_ready" == 1 ]] || {
+  bash "$STOP" >/dev/null 2>&1 || true
+  fail "A* planner startup failed: $ASTAR_LOG"
+}
+fi
 SAFETY_LOG="$RUN_DIR/pid_safety_${ROUTE}_$(date +%Y%m%d_%H%M%S).log"
 # Always overwrite the private ROS param: the previous test=true can survive node exit.
 RECEDING_ENABLED=false

@@ -55,15 +55,19 @@ for name in ff_pid.pid pid_safety.pid; do
 done
 
 # Request SIGINT to finalize rosbag before ROS publishers are stopped.
-if [[ -s "$RUN_DIR/rosbag.pid" ]]; then
-  IFS= read -r pid < "$RUN_DIR/rosbag.pid"
+# all_topics.pid is the optional full-topic (rosbag record -a) recorder; it
+# gets a longer flush window because its buffer is much larger.
+for bag_pid_file in all_topics.pid rosbag.pid; do
+  [[ -s "$RUN_DIR/$bag_pid_file" ]] || continue
+  if [[ "$bag_pid_file" == all_topics.pid ]]; then wait_ticks=120; else wait_ticks=40; fi
+  IFS= read -r pid < "$RUN_DIR/$bag_pid_file"
   if [[ "$pid" =~ ^[0-9]+$ && -r "/proc/$pid/cmdline" ]]; then
     pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]' || true)"
     cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
     if [[ "$pgid" == "$pid" && "$cmd" == *rosbag* && "$cmd" == *record* ]]; then
-      info "Closing rosbag PID=$pid"
+      info "Closing rosbag PID=$pid ($bag_pid_file)"
       kill -INT -- "-$pgid" 2>/dev/null || true
-      for ((j=0;j<40;j++)); do
+      for ((j=0;j<wait_ticks;j++)); do
         state="$(ps -o stat= -p "$pid" 2>/dev/null | tr -d '[:space:]' || true)"
         [[ -z "$state" || "$state" == Z* ]] && break
         sleep 0.25
@@ -78,10 +82,10 @@ if [[ -s "$RUN_DIR/rosbag.pid" ]]; then
       failed=1
     fi
   fi
-fi
+done
 
 shopt -s nullglob
-active_bags=("$RUN_DIR"/ready_topics*.bag.active)
+active_bags=("$RUN_DIR"/ready_topics*.bag.active "$RUN_DIR"/all_topics*.bag.active)
 if (( ${#active_bags[@]} )); then
   warn "Bag segments still active/incomplete: ${active_bags[*]}"
   failed=1

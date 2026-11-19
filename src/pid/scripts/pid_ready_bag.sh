@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
-# Record only lightweight ROS1 topics for READY, manual driving, and FF-PD.
+# ROS1 bag recording for READY, manual driving, and FF-PD. Two recorders:
+#   ready_topics*.bag  lightweight fixed topic list (pid_rosbag_organize.py
+#                      splits these per drive; unchanged contract)
+#   all_topics*.bag    every topic (rosbag record -a, lz4), for offline
+#                      replay/debugging. On by default; PID_BAG_ALL=0 disables.
+#                      Optional: if it cannot start, READY continues with the
+#                      lightweight bag only.
 # Usage: bash pid_ready_bag.sh start <run_dir>
 #        bash pid_ready_bag.sh status|stop|mark <LABEL>
 set -Eeuo pipefail
@@ -7,6 +13,17 @@ set -Eeuo pipefail
 ROS_SETUP="${ROS_SETUP:-/opt/ros/noetic/setup.bash}"
 STATE_DIR="${PID_READY_STATE_DIR:-$HOME/.local/state/pid_ready}"
 MODE="${1:-}"
+
+# Full-topic recorder settings. Raw LiDAR + registered clouds run to roughly
+# 3-5 GB per 10 min after lz4 (tools/record_debug_bag.sh), hence the larger
+# free-space floor, buffer and segment size than the lightweight recorder.
+ALL_TOPICS="${PID_BAG_ALL:-1}"
+ALL_MIN_FREE_MB="${PID_BAG_ALL_MIN_FREE_MB:-10240}"
+ALL_BUFFER_MB="${PID_BAG_ALL_BUFFER_MB:-1024}"
+ALL_SPLIT_MB="${PID_BAG_ALL_SPLIT_MB:-2048}"
+# Same exclusions as tools/record_debug_bag.sh: large reconstructible map
+# previews, cosmetic markers, rosout, and image transport duplicates.
+ALL_EXCLUDE="${PID_BAG_ALL_EXCLUDE:-^/fast_lio_icp/(map_preview|live_preview|.*_marker)\$|^/rosout(_agg)?\$|/compressed|/theora}"
 
 if [[ ! -f "$ROS_SETUP" ]]; then
   echo "[FAIL] ROS setup not found: $ROS_SETUP" >&2
@@ -26,14 +43,17 @@ latest_run_dir() {
   printf '%s\n' "$p"
 }
 
-read_pid() {
-  local f="$1/rosbag.pid"
+read_pid_file() {
+  local f="$1"
   [[ -s "$f" ]] || return 1
   local p
   IFS= read -r p < "$f"
   [[ "$p" =~ ^[0-9]+$ ]] || return 1
   printf '%s\n' "$p"
 }
+
+read_pid() { read_pid_file "$1/rosbag.pid"; }
+read_all_pid() { read_pid_file "$1/all_topics.pid"; }
 
 recorder_alive() {
   local pid="$1"
@@ -43,6 +63,69 @@ recorder_alive() {
   local cmd
   cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline")"
   [[ "$cmd" == *rosbag* && "$cmd" == *record* ]]
+}
+
+# SIGINT the recorder's own process group and wait for the bag to close.
+# Returns 1 if it is still running or left .bag.active segments behind.
+close_recorder() {
+  local pid="$1" run_dir="$2" prefix="$3" label="$4"
+  local pgid
+  # start runs 'setsid', so PID is the recorder's isolated process group.
+  pgid="$(ps -o pgid= -p "$pid" | tr -d ' ')"
+  if [[ "$pgid" != "$pid" ]]; then
+    echo "[FAIL] $label recorder PGID does not match recorded PID; refusing to signal other processes." >&2
+    return 1
+  fi
+  echo "[INFO] Gracefully closing $label ROS bag (SIGINT to recorder process group $pgid)..."
+  kill -INT -- "-$pgid"
+  # The full-topic bag can need longer to flush its buffer.
+  for (( i=0; i<120; i++ )); do
+    if ! recorder_alive "$pid"; then break; fi
+    sleep 0.5
+  done
+  if recorder_alive "$pid"; then
+    echo "[WARN] $label recorder is still running; not force-killing it. Check: $run_dir" >&2
+    return 1
+  fi
+  local active
+  shopt -s nullglob
+  active=("$run_dir"/"$prefix"*.bag.active)
+  shopt -u nullglob
+  if (( ${#active[@]} > 0 )); then
+    echo "[WARN] $label recorder exited but .bag.active remains; inspect before using: ${active[*]}" >&2
+    return 1
+  fi
+  echo "[OK] $label ROS bag stopped and closed in: $run_dir"
+}
+
+start_all_topics() {
+  local run_dir="$1" pid free_mb
+  if pid="$(read_all_pid "$run_dir")" && recorder_alive "$pid"; then
+    echo "[WARN] Full-topic recorder is already running: PID $pid" >&2
+    return 0
+  fi
+  free_mb="$(df -Pm "$run_dir" | awk 'NR==2 {print $4}')"
+  if [[ ! "$free_mb" =~ ^[0-9]+$ ]] || (( free_mb < ALL_MIN_FREE_MB )); then
+    echo "[WARN] Full-topic bag skipped: needs ${ALL_MIN_FREE_MB} MiB free (free: ${free_mb:-unknown} MiB)" >&2
+    return 1
+  fi
+  # -a keeps polling the master, so topics that appear after sensor and
+  # localization startup are picked up as they come online.
+  setsid nohup python3 -c 'import os, signal, sys; signal.signal(signal.SIGINT, signal.SIG_DFL); os.execvp(sys.argv[1], sys.argv[1:])' \
+    rosbag record -a --lz4 \
+    -b "$ALL_BUFFER_MB" \
+    --split --size="$ALL_SPLIT_MB" --duration=15m \
+    -x "$ALL_EXCLUDE" \
+    -o "$run_dir/all_topics" \
+    >"$run_dir/all_topics.log" 2>&1 </dev/null &
+  pid=$!
+  printf '%s\n' "$pid" > "$run_dir/all_topics.pid"
+  sleep 1
+  if ! recorder_alive "$pid"; then
+    echo "[WARN] Full-topic rosbag exited immediately. Inspect: $run_dir/all_topics.log" >&2
+    return 1
+  fi
+  echo "[OK] Full-topic ROS bag recorder active (rosbag record -a, PID $pid)"
 }
 
 case "$MODE" in
@@ -99,6 +182,12 @@ case "$MODE" in
       exit 1
     fi
     echo "[OK] ROS bag recorder active (PID $pid); run: $RUN_DIR"
+    if [[ "$ALL_TOPICS" == 1 ]]; then
+      start_all_topics "$RUN_DIR" || \
+        echo "[WARN] Continuing with the lightweight bag only." >&2
+    else
+      echo "[INFO] Full-topic bag disabled (PID_BAG_ALL=$ALL_TOPICS)."
+    fi
     echo "[INFO] Recording starts before sensor/localization startup."
     ;;
 
@@ -110,8 +199,14 @@ case "$MODE" in
     else
       echo "[WARN] Recorder not active"
     fi
+    if pid="$(read_all_pid "$RUN_DIR")" && recorder_alive "$pid"; then
+      echo "[OK] Full-topic recorder active: PID $pid"
+    elif [[ "$ALL_TOPICS" == 1 ]]; then
+      echo "[WARN] Full-topic recorder not active"
+    fi
     echo "[INFO] Recording directory: $RUN_DIR"
-    find "$RUN_DIR" -maxdepth 1 -type f \( -name 'ready_topics*.bag' -o -name 'ready_topics*.bag.active' \) -printf '%f (%s bytes)\n' | sort
+    find "$RUN_DIR" -maxdepth 1 -type f \( -name 'ready_topics*.bag' -o -name 'ready_topics*.bag.active' \
+      -o -name 'all_topics*.bag' -o -name 'all_topics*.bag.active' \) -printf '%f (%s bytes)\n' | sort
     ;;
 
   mark)
@@ -139,33 +234,17 @@ case "$MODE" in
   stop)
     [[ "$#" == 1 ]] || { echo "Usage: $0 stop" >&2; exit 64; }
     RUN_DIR="$(latest_run_dir)"
+    rc=0
+    # Full-topic recorder first: it is optional, so its absence is not an error.
+    if pid="$(read_all_pid "$RUN_DIR")" && recorder_alive "$pid"; then
+      close_recorder "$pid" "$RUN_DIR" all_topics "Full-topic" || rc=1
+    fi
     if ! pid="$(read_pid "$RUN_DIR")" || ! recorder_alive "$pid"; then
       echo "[WARN] Recorder not active. No stop signal sent." >&2
       exit 1
     fi
-    # start runs 'setsid', so PID is the recorder's isolated process group.
-    pgid="$(ps -o pgid= -p "$pid" | tr -d ' ')"
-    if [[ "$pgid" != "$pid" ]]; then
-      echo "[FAIL] Recorder PGID does not match recorded PID; refusing to signal other processes." >&2
-      exit 1
-    fi
-    echo "[INFO] Gracefully closing ROS bag (SIGINT to recorder process group $pgid)..."
-    kill -INT -- "-$pgid"
-    for (( i=0; i<60; i++ )); do
-      if ! recorder_alive "$pid"; then break; fi
-      sleep 0.5
-    done
-    if recorder_alive "$pid"; then
-      echo "[WARN] Recorder is still running; not force-killing it. Check: $RUN_DIR/rosbag.log" >&2
-      exit 1
-    fi
-    shopt -s nullglob
-    active=("$RUN_DIR"/ready_topics*.bag.active)
-    if (( ${#active[@]} > 0 )); then
-      echo "[WARN] Recorder exited but .bag.active remains; inspect before using: ${active[*]}" >&2
-      exit 1
-    fi
-    echo "[OK] ROS bag stopped and closed in: $RUN_DIR"
+    close_recorder "$pid" "$RUN_DIR" ready_topics "READY" || rc=1
+    (( rc == 0 )) || exit 1
     echo "[INFO] Sensor/localization/base ROS nodes were not stopped."
     ;;
 
