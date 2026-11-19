@@ -32,6 +32,12 @@ STOP="${BASE_STOP:-$SCRIPT_DIR/stop.sh}"
 [ -f "$STOP" ] || STOP="$SCRIPT_DIR/stop.sh"
 bash "$STOP" || echo "  (stop.sh reported an error; continuing -- the sweep below is the real stop)" >&2
 
+# The full-topic bag is closed before the sweep, not by it: the sweep SIGKILLs
+# survivors after 10 s, and a multi-GB bag still writing its index then stays
+# .bag.active. bag_all_topics.sh waits for the recorder and never fails.
+ALL_BAG="$SCRIPT_DIR/bag_all_topics.sh"
+[ -f "$ALL_BAG" ] && { bash "$ALL_BAG" stop || true; }
+
 say "2/3  sweeping the stack"
 # Exactly what the bring-up sweeps, read out of the bring-up. A second hand-kept
 # list here would be edited in the same commit as the first one and would

@@ -296,6 +296,37 @@ def test_the_drive_log_never_fails_whoever_calls_it():
     assert (TOOLS / "drive_log" / "route_threat.py").is_file()
 
 
+def test_the_all_topics_bag_records_everything_and_never_fails():
+    text = script("bag_all_topics.sh").replace("\r\n", "\n")
+    assert "set -e" not in text
+    assert text.rstrip().endswith("exit 0")
+    assert "rosbag record -a --lz4" in text
+    assert "--split --size=" in text
+    # Same exclusions as the debug recorder: previews, rosout, compressed.
+    assert "map_preview|live_preview" in text and "rosout" in text
+    assert "ALL_TOPICS_BAG:-1" in text
+    # Closed by SIGINT to its own group, never escalated to SIGKILL.
+    assert 'kill -INT -- "-$pgid"' in text
+    assert "kill -9" not in text and "pkill" not in text
+    # SIGINT must not stay ignored across exec in a background job.
+    assert "signal.SIG_DFL" in text
+
+
+def test_the_all_topics_bag_is_started_last_and_closed_before_every_sweep():
+    start = script("start_wheelchair_localization.sh").replace("\r\n", "\n")
+    stop_call = 'bash "$(dirname "$0")/bag_all_topics.sh" stop'
+    start_call = 'bash "$(dirname "$0")/bag_all_topics.sh" start'
+    assert stop_call in start and start_call in start
+    # Closed before the keep-localization sweep and the full sweep...
+    assert start.index(stop_call) < start.index("for pattern in '[r]oslaunch base_model'")
+    assert start.index(stop_call) < re.search(r"^for pattern in ", start, re.M).start()
+    # ...and started with the black box, after the route layer is up.
+    assert start.index("live_blackbox.log") < start.index(start_call)
+    teardown = script("stop_stack.sh").replace("\r\n", "\n")
+    assert 'bash "$ALL_BAG" stop' in teardown
+    assert teardown.index('bash "$ALL_BAG" stop') < teardown.index('say "2/3  sweeping the stack"')
+
+
 def test_the_bringup_sweeps_a_leftover_drive_logger_and_bags_smith_state():
     start = script("start_wheelchair_localization.sh").replace("\r\n", "\n")
     first = re.search(r"^for pattern in (.+?); do$", start, re.M).group(1)

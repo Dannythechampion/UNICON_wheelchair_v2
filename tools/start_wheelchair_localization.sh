@@ -415,6 +415,14 @@ keep_localization_check() {
 VN_IMU_KEEP="${VN_IMU:-0}"
 if [ "$KEEP_LOCALIZATION" = "1" ]; then
   keep_localization_check || exit 11
+fi
+# Close the full-topic bag before either sweep below: the sweep's
+# '[r]osbag record' kill is followed by SIGKILL for survivors, and a
+# multi-GB bag cut off mid-index is left as .bag.active.
+if [ "$SHADOW_QA" != "1" ]; then
+  bash "$(dirname "$0")/bag_all_topics.sh" stop || true
+fi
+if [ "$KEEP_LOCALIZATION" = "1" ]; then
   echo "  keeping lidar, FAST-LIO and the localizer - TRACKING on $MAP_ID"
   # The route layer only: everything the sweep below kills except what
   # stages 2-5 start. wheel.launch is the one roslaunch child here, so it is
@@ -802,6 +810,12 @@ setsid nohup rosbag record --lz4 \
   /waypoint_follower/route_identity /uart_tx_diag /stop_watchdog/alarm /safety_gate/status \
   /field_mark /dwa_follower/smith_state \
   > "$LOG/live_blackbox.log" 2>&1 < /dev/null &
+# Everything else as well (raw LiDAR, clouds, TF), split 2 GB / 15 min.
+# ALL_TOPICS_BAG=0 turns it off; it never fails the bring-up.
+if [ "$SHADOW_QA" != "1" ]; then
+  ALL_TOPICS_BAG_LOG="$LOG/live_all_topics.log" \
+    bash "$(dirname "$0")/bag_all_topics.sh" start || true
+fi
 
 echo ""
 if [ "$SAFETY_POLICIES" = "false" ]; then
