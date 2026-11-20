@@ -97,9 +97,18 @@ if printf '%s\n' "$info" | awk '/^Publishers:/ {p=1;next} /^Subscribers:/ {p=0} 
   fail '/cmd_vel의 다른 발행자가 존재합니다. 중복 제어를 허용하지 않습니다.'
 fi
 
+# Verify operator is safely in MANUAL and stopped before clearing any previous
+# stop_watchdog alarm or running the full READY preflight.
+python3 "$CHECK" wheel --mode MANUAL --stopped || fail 'MANUAL 정차 상태를 확인할 수 없습니다.'
+if timeout 2 rosservice info /stop_watchdog/clear >/dev/null 2>&1; then
+  clear_out="$(timeout 3 rosservice call /stop_watchdog/clear '{}' 2>/dev/null || true)"
+  if grep -Fq 'cleared previous alarm:' <<< "$clear_out"; then
+    prev_msg="$(printf '%s\n' "$clear_out" | sed -n 's/^[[:space:]]*message:[[:space:]]*//p' | head -n 1)"
+    printf '[WARN] 이전 stop_watchdog 알람을 해제하고 새 주행을 점검합니다 (%s)\n' "$prev_msg" >&2
+  fi
+fi
 # Read-only preflight. Compares chair pose with the WHOLE selected route, not its START waypoint.
 python3 "$MONITOR" --check-ready || fail 'READY 점검 실패. 수동 모드를 유지합니다.'
-python3 "$CHECK" wheel --mode MANUAL --stopped || fail 'MANUAL 정차 상태를 확인할 수 없습니다.'
 # Require a compatible pose anywhere on the selected route before launching FF-PD.
 # The check prints turn-first, approach-second guidance on refusal.
 # The pose checker emits one typed JSON line on stdout for the future app bridge

@@ -29,8 +29,11 @@ from pid_occupancy_geometry import OccupiedCells
 from pid_static_window import StaticVoteWindow, STATIC_WATCH_M
 from receding_motion import RecedingTracks
 from obstacle_policy import (obstacle_restriction,
+                             near_object_speed_cap,
                              FRONT_STOP_M as POLICY_FRONT_STOP_M,
-                             FRONT_SLOW_M as POLICY_FRONT_SLOW_M)
+                             FRONT_SLOW_M as POLICY_FRONT_SLOW_M,
+                             NEAR_STOP_GAP_M as POLICY_NEAR_STOP_GAP_M,
+                             NEAR_SLOW_GAP_M as POLICY_NEAR_SLOW_GAP_M)
 
 localization_scripts = os.path.join(
     rospkg.RosPack().get_path("static_livox_localization"), "scripts")
@@ -51,7 +54,9 @@ CHAIR_HALF_WIDTH_M = 0.30                  # Approx. physical half width
 CHAIR_FRONT_M = 0.52                       # Axle-centred front estimate
 CHAIR_REAR_M = 0.30                        # Provisional rear extent
 MASK_CLEARANCE_M = 0.20                    # Predicted/current centre to mask
-NEAR_STOP_GAP_M = 0.50                     # Box-to-chair footprint gap
+NEAR_STOP_GAP_M = POLICY_NEAR_STOP_GAP_M   # Box-to-chair footprint emergency STOP gap (0.50 m)
+NEAR_SLOW_GAP_M = POLICY_NEAR_SLOW_GAP_M   # Front/side linear pre-slowdown band (0.50-1.00 m)
+NEAR_SLOW_MIN_X_M = -0.10                  # Ignore already-passed objects behind chair for pre-slowdown
 FRONT_STOP_M = POLICY_FRONT_STOP_M         # Single source of truth: obstacle_policy.py
 FRONT_SLOW_M = POLICY_FRONT_SLOW_M         # Also used by path_gap lookahead
 OBSTACLE_SLOW_MIN_MPS = 0.40               # Limit approached just above FRONT_STOP_M; at/below it STOP
@@ -254,6 +259,7 @@ class Safety:
                 and CTE_SPEED_START_M >= CTE_DEADZONE_M
                 and CTE_SLOW_PER_M_MPS > 0 and CURVATURE_SLOW_START_INV_M > 0
                 and FRONT_STOP_M < FRONT_SLOW_M
+                and 0 < NEAR_STOP_GAP_M < NEAR_SLOW_GAP_M
                 and 0 < BUMP_SPEED_CAP_MPS <= MAX_SPEED_MPS
                 and 0 < BUMP_APPROACH_M and 0 <= BUMP_EXIT_M
                 and BUMP_ROUTE_MATCH_MAX_M > 0
@@ -691,6 +697,7 @@ class Safety:
         early_observations = []
         early_profile_gaps = {}
         obstacle_cap = MAX_SPEED_MPS
+        near_slow_cap = MAX_SPEED_MPS
         cap_reason = None
         stopped_distance, stopped_id = None, None
         receding_ignored = []
@@ -719,7 +726,7 @@ class Safety:
             if near_gap_for_obj is not None:
                 near_gap = near_gap_for_obj if near_gap is None else min(near_gap, near_gap_for_obj)
             # Collect early 5 m path evidence independently of the normal
-            # 1-2 m dynamic slowing rules.
+            # 1-3 m dynamic slowing rules.
             early_gap = path_gap(self.route, station, pose, samples,
                                  corridor + 0.10, STATIC_WATCH_M)
             if early_gap is not None and early_gap <= STATIC_WATCH_M:
@@ -729,6 +736,19 @@ class Safety:
                 info.update(near_gap_m=near_gap_for_obj, obstacle_id=item.get("id"))
                 self.static_votes.add(stamp, early_observations)
                 return "STOP", 0., "VERY_CLOSE_OBJECT", info
+            # Front/side pre-slowdown in 0.50-1.00 m band (excluding objects already behind chair)
+            front_side_gaps = [
+                math.hypot(max(0., sx - CHAIR_FRONT_M,
+                               -CHAIR_REAR_M - sx),
+                           max(0., abs(sy) - bin_half - CHAIR_HALF_WIDTH_M))
+                for sx, sy in samples if sx >= NEAR_SLOW_MIN_X_M
+            ]
+            if front_side_gaps:
+                item_near_cap = near_object_speed_cap(
+                    min(front_side_gaps), MAX_SPEED_MPS, OBSTACLE_SLOW_MIN_MPS,
+                    NEAR_STOP_GAP_M, NEAR_SLOW_GAP_M)
+                if item_near_cap < near_slow_cap:
+                    near_slow_cap = item_near_cap
             distance = path_gap(self.route, station, pose, samples, corridor)
             if distance is None:
                 continue
@@ -739,7 +759,7 @@ class Safety:
             item_cap, item_stop, item_reason = obstacle_restriction(
                 distance, item.get("motion"), moving_away,
                 MAX_SPEED_MPS, OBSTACLE_SLOW_MIN_MPS,
-                static_detour_enabled=self.enable_replan,  # static STOP from 2.5m with replan
+                static_detour_enabled=self.enable_replan,  # static STOP from FRONT_SLOW_M with replan
                 receding_enabled=self.enable_receding)
             if item_reason == "RECEDING_IGNORED":
                 receding_ignored.append(item.get("id"))
@@ -753,6 +773,7 @@ class Safety:
             self.static_votes.add(stamp, early_observations)
         info["static_candidate_id"] = self.static_votes.confirmed() if self.enable_replan else None
         info["near_gap_m"] = near_gap
+        info["near_slow_limit_mps"] = near_slow_cap
         info["obstacle_distance_m"] = closest
         info["obstacle_id"] = stopped_id if stopped_id is not None else closest_id
         info["obstacle_limit_mps"] = obstacle_cap
@@ -764,10 +785,12 @@ class Safety:
             info["obstacle_id"] = info["static_candidate_id"]
             info["obstacle_distance_m"] = early_profile_gaps[info["static_candidate_id"]]
             return "STOP", 0., "STATIC_REPLAN_EARLY", info
-        cap = min(MAX_SPEED_MPS, cte_cap, curve_cap, obstacle_cap, goal_cap, bump_cap)
+        cap = min(MAX_SPEED_MPS, cte_cap, curve_cap, obstacle_cap, near_slow_cap, goal_cap, bump_cap)
         if cap < MAX_SPEED_MPS - SLOW_THRESHOLD_MPS:
             if cap == obstacle_cap:
                 reason = "PATH_OBSTACLE"
+            elif cap == near_slow_cap:
+                reason = "RECEDING_NEAR_SLOW"
             elif cap == cte_cap:
                 reason = "CTE_LIMIT"
             elif cap == bump_cap:

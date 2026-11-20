@@ -32,6 +32,7 @@ else:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ff_pid_core as core_settings
 from ff_pid_core import FFPD, Route
+import ff_pid_recovery as recovery
 
 existing_scripts = os.path.join(
     rospkg.RosPack().get_path("static_livox_localization"), "scripts")
@@ -192,16 +193,21 @@ class FFNode:
         self.odom_received = None
         self.pitch_deg = 0.0
         self.motion_policy = "STOP"
+        self.policy_reason = ""
         self.speed_limit_mps = 0.0
         self.policy_received = None
         self.obstacle_stopped = False
         self.resume_after_obstacle = False
+        self.auto_hold_kind = None
+        self.auto_hold_since = None
+        self.auto_hold_detail = None
         self.wheel = None
         self.wheel_pair = None
         self.wheel_received = None
         self.mode = None
         self.tracking = ""
         self.diag_received = None
+        self.degraded_since = None
         self.reason = "PAUSED"
         self.last_tick = None
         self.last_command_v = 0.0
@@ -209,6 +215,20 @@ class FFNode:
         self.max_pose_age = float(rospy.get_param("~max_pose_age", MAX_POSE_AGE_S))
         self.max_wheel_age = float(rospy.get_param("~max_wheel_age", MAX_WHEEL_AGE_S))
         self.max_diag_age = float(rospy.get_param("~max_diag_age", MAX_DIAG_AGE_S))
+        self.degraded_pass_s = float(rospy.get_param(
+            "~degraded_pass_s", recovery.DEGRADED_PASS_S))
+        self.degraded_max_hold_s = float(rospy.get_param(
+            "~degraded_max_hold_s", recovery.DEGRADED_MAX_HOLD_S))
+        self.transient_hold_max_s = float(rospy.get_param(
+            "~transient_hold_max_s", recovery.TRANSIENT_HOLD_MAX_S))
+        self.wheel_settle = recovery.WheelSettleGuard(
+            threshold_mps=self.stopped_wheel_threshold,
+            settle_s=float(rospy.get_param(
+                "~resume_wheel_settle_s", recovery.RESUME_WHEEL_SETTLE_S)),
+            timeout_s=float(rospy.get_param(
+                "~resume_wheel_timeout_s", recovery.RESUME_WHEEL_TIMEOUT_S)),
+            fresh_s=self.max_wheel_age,
+        )
         self.pub = rospy.Publisher("/cmd_vel", Twist, queue_size=1)
         self.status = rospy.Publisher("/ff_pid/status", String, queue_size=3)
         self.replan_ack = rospy.Publisher("/ff_pid/replan/ack", String, queue_size=3)
@@ -400,42 +420,108 @@ class FFNode:
         except (ValueError, TypeError, KeyError, OverflowError) as exc:
             with self.lock:
                 self.policy_received = None
+                self.policy_reason = ""
                 self.speed_limit_mps = 0.0
                 self.motion_policy = "STOP"
-                self.resume_after_obstacle = False
-                self.obstacle_stopped = False
+                self.clear_hold_state()
                 self.disable("SAFETY_POLICY_INVALID")
             rospy.logerr_throttle(2, "Invalid safety policy: %s", exc)
             return
         with self.lock:
             self.motion_policy = state
+            self.policy_reason = str(data.get("reason", ""))
             self.speed_limit_mps = cap
             self.policy_received = now
             if state == "STOP":
-                # Only a cleared physical obstacle may trigger automatic resume.
-                # Perception faults, bad geometry and mask boundary faults require
-                # an explicit new /ff_pid/start after the fault is resolved.
-                can_resume = data.get("reason") in (
-                    "PATH_OBSTACLE", "VERY_CLOSE_OBJECT", "STATIC_REPLAN_EARLY",
-                    "RELEASE_CONFIRM", "REPLAN_HOLD")
-                if self.enabled:
-                    self.resume_after_obstacle = can_resume
-                    self.obstacle_stopped = can_resume
-                    self.disable("OBSTACLE_STOP" if can_resume else
-                                 "SAFETY_STOP: " + str(data.get("reason", "UNKNOWN")))
-                elif not can_resume:
-                    self.resume_after_obstacle = False
-                    self.obstacle_stopped = False
+                kind, status_label = recovery.classify_policy_stop(self.policy_reason)
+                if kind == "FATAL":
+                    was_active = self.enabled or self.obstacle_stopped or self.auto_hold_kind is not None
+                    self.clear_hold_state()
+                    if was_active:
+                        self.disable(status_label)
+                elif self.enabled:
+                    self.enter_hold(kind, status_label, now, detail=self.policy_reason)
+                elif self.obstacle_stopped and self.resume_after_obstacle:
+                    # Already holding in AUTO: preserve auto-resume across brief
+                    # transient sensor blips; upgrade to OBSTACLE if a physical
+                    # obstacle is also present.
+                    if kind == "OBSTACLE":
+                        self.auto_hold_kind = "OBSTACLE"
+                        self.auto_hold_since = None
+                        self.auto_hold_detail = self.policy_reason
+                        self.publish_status("OBSTACLE_STOP")
+                    elif self.auto_hold_kind == "TRANSIENT" and self.auto_hold_since is None:
+                        self.auto_hold_since = now
+                        self.auto_hold_detail = self.policy_reason
             elif self.obstacle_stopped and self.resume_after_obstacle and not self.external_hold:
-                if self.readiness(now) is None:
-                    self.core.reset()
-                    if self.replan_resume_pending:
-                        self.core.station = 0.0
-                        self.replan_resume_pending = False
-                    self.enabled = True
-                    self.obstacle_stopped = False
-                    self.resume_after_obstacle = False
-                    self.publish_status("RUNNING")
+                self.try_auto_resume(now)
+
+    def clear_hold_state(self):
+        self.obstacle_stopped = False
+        self.resume_after_obstacle = False
+        self.auto_hold_kind = None
+        self.auto_hold_since = None
+        self.auto_hold_detail = None
+        self.wheel_settle.reset_wait()
+
+    def enter_hold(self, kind, status_label, now, detail=None):
+        self.obstacle_stopped = True
+        self.resume_after_obstacle = True
+        self.auto_hold_kind = kind
+        self.auto_hold_detail = detail
+        if kind == "TRANSIENT":
+            if self.auto_hold_since is None:
+                self.auto_hold_since = now
+        else:
+            self.auto_hold_since = None
+        self.wheel_settle.reset_wait()
+        self.disable(status_label)
+
+    def try_auto_resume(self, now):
+        if self.mode != AUTO_MODE:
+            self.clear_hold_state()
+            self.disable("MANUAL_INTERVENTION")
+            return False
+        t_action, _ = self.tracking_state(now, for_start_or_resume=False)
+        if t_action == "FATAL":
+            self.clear_hold_state()
+            self.disable("SAFETY_STOP: NO_TRACKING")
+            return False
+        pose = self.current_pose(now)
+        if pose is not None and not self.mask.contains((pose[0], pose[1])):
+            self.clear_hold_state()
+            self.disable("SAFETY_STOP: OUTSIDE_SAFE_ROUTE")
+            return False
+        if (self.auto_hold_kind == "TRANSIENT" and
+                self.auto_hold_since is not None and
+                now - self.auto_hold_since > self.transient_hold_max_s):
+            detail = self.auto_hold_detail or "SENSOR_TIMEOUT"
+            self.clear_hold_state()
+            self.disable("SAFETY_STOP: " + str(detail))
+            return False
+        if self.motion_policy not in ("CLEAR", "SLOW"):
+            self.wheel_settle.reset_wait()
+            return False
+        if self.readiness(now, for_start_or_resume=True) is not None:
+            self.wheel_settle.reset_wait()
+            return False
+        ok, timed_out = self.wheel_settle.can_resume(now)
+        if not ok:
+            return False
+        if timed_out:
+            wl, wr = self.wheel_pair or (0.0, 0.0)
+            rospy.logwarn_throttle(
+                2.0,
+                "Auto-resuming after %.1f s with residual wheel speed (L=%.2f, R=%.2f m/s)",
+                self.wheel_settle.timeout_s, wl, wr)
+        self.core.reset()
+        if self.replan_resume_pending:
+            self.core.station = 0.0
+            self.replan_resume_pending = False
+        self.enabled = True
+        self.clear_hold_state()
+        self.publish_status("RUNNING")
+        return True
 
     def on_wheel(self, msg):
         try:
@@ -443,17 +529,22 @@ class FFNode:
             v = (left + right)/2
             w = (right - left) / self.core.wheel_track
             mode = int(msg.data[1])
+            now = rospy.Time.now().to_sec()
             with self.lock:
                 self.wheel = (v, w)
                 self.wheel_pair = (left, right)
-                self.wheel_received = rospy.Time.now().to_sec()
+                self.wheel_received = now
                 self.mode = mode
-                # Any MANUAL intervention revokes obstacle auto-resume.
-                # A later AUTO mode message alone cannot restart movement.
+                self.wheel_settle.observe_wheels(left, right, now)
+                # Any MANUAL intervention (including during OBSTACLE_STOP/HOLD)
+                # permanently revokes auto-resume and emits MANUAL_INTERVENTION.
                 if mode != AUTO_MODE:
-                    self.resume_after_obstacle = False
-                    self.obstacle_stopped = False
-                    if self.enabled:
+                    was_active_or_holding = (
+                        self.enabled or self.obstacle_stopped or
+                        self.auto_hold_kind is not None
+                    )
+                    self.clear_hold_state()
+                    if was_active_or_holding:
                         self.disable("MANUAL_INTERVENTION")
                 if self.finishing:
                     if (abs(left) <= self.stopped_wheel_threshold and
@@ -467,30 +558,57 @@ class FFNode:
     def on_diag(self, msg):
         for d in msg.status:
             if d.name == "fast_lio_icp":
+                now = rospy.Time.now().to_sec()
                 with self.lock:
+                    if d.message == "TRACKING":
+                        self.degraded_since = None
+                    elif d.message == "DEGRADED":
+                        if self.degraded_since is None:
+                            self.degraded_since = now
+                    else:
+                        self.degraded_since = None
                     self.tracking = d.message
-                    self.diag_received = rospy.Time.now().to_sec()
+                    self.diag_received = now
                 return
 
     def on_external_stop(self, msg):
         with self.lock:
             if msg.data:
                 self.external_hold = True
-                self.resume_after_obstacle = False
+                self.clear_hold_state()
                 self.disable("EXTERNAL_STOP_REQUEST")
             else:
                 self.external_hold = False
                 # 정지 요청 해제만으로 주행이 다시 시작되지 않게 합니다.
 
-    def readiness(self, now):
+    def tracking_state(self, now, for_start_or_resume=False):
+        diag_age = None if self.diag_received is None else now - self.diag_received
+        degraded_age = (
+            None if self.degraded_since is None else now - self.degraded_since
+        )
+        return recovery.classify_tracking(
+            self.tracking,
+            diag_age,
+            self.max_diag_age,
+            degraded_age,
+            pass_s=self.degraded_pass_s,
+            max_hold_s=self.degraded_max_hold_s,
+            for_start_or_resume=for_start_or_resume,
+        )
+
+    def readiness(self, now, for_start_or_resume=False):
         if self.policy_received is None or now - self.policy_received > 1.0:
             return "SAFETY_POLICY_STALE"
         if self.current_pose(now) is None:
             return "POSE_STALE"
         if self.wheel is None or self.wheel_received is None or now - self.wheel_received > self.max_wheel_age:
             return "WHEEL_STALE"
-        if self.diag_received is None or now - self.diag_received > self.max_diag_age or self.tracking != "TRACKING":
+        t_action, t_reason = self.tracking_state(
+            now, for_start_or_resume=for_start_or_resume)
+        if t_action == "FATAL":
             return "NO_TRACKING"
+        if t_action == "HOLD":
+            return t_reason
         if self.mode != AUTO_MODE:
             return "NOT_AUTO_MODE"
         x, y, _ = self.current_pose(now)
@@ -532,8 +650,7 @@ class FFNode:
             if not req.data:
                 self.finishing = False
                 self.stopped_reports = 0
-                self.resume_after_obstacle = False
-                self.obstacle_stopped = False
+                self.clear_hold_state()
                 self.disable("PAUSED")
                 return SetBoolResponse(True, "FF-PD PAUSED")
             if self.finishing:
@@ -545,15 +662,14 @@ class FFNode:
             others = self.competing_publishers()
             if others:
                 return SetBoolResponse(False, "REFUSED competing publishers: " + ", ".join(others))
-            reason = self.readiness(rospy.Time.now().to_sec())
+            reason = self.readiness(rospy.Time.now().to_sec(), for_start_or_resume=True)
             if reason:
                 return SetBoolResponse(False, "REFUSED: " + reason)
             self.core.reset()
             self.last_tick = None
             self.last_command_v = 0.0
             self.last_command_w = 0.0
-            self.resume_after_obstacle = False
-            self.obstacle_stopped = False
+            self.clear_hold_state()
             self.enabled = True
             self.publish_status("RUNNING")
             return SetBoolResponse(True, "FF-PD STARTED")
@@ -563,9 +679,10 @@ class FFNode:
         with self.lock:
             others = self.competing_sources
             if others:
-                if self.enabled or self.finishing:
+                if self.enabled or self.finishing or self.obstacle_stopped:
                     self.enabled = False
                     self.finishing = False
+                    self.clear_hold_state()
                     self.core.reset()  # clear I state without racing another publisher
                     self.last_tick = None
                     self.last_command_v = 0.0
@@ -587,31 +704,39 @@ class FFNode:
                 return
             if not self.enabled:
                 if (self.obstacle_stopped and self.resume_after_obstacle and
-                    self.motion_policy in ("CLEAR", "SLOW") and not self.external_hold):
-                    if self.readiness(now) is None:
-                        self.core.reset()
-                        if self.replan_resume_pending:
-                            self.core.station = 0.0
-                            self.replan_resume_pending = False
-                        self.enabled = True
-                        self.obstacle_stopped = False
-                        self.resume_after_obstacle = False
-                        self.publish_status("RUNNING")
+                        not self.external_hold):
+                    self.try_auto_resume(now)
                 if not self.enabled:
                     self.stop()
                     return
-            reason = self.readiness(now)
+            reason = self.readiness(now, for_start_or_resume=False)
             if reason is None and self.external_hold:
                 reason = "EXTERNAL_STOP_REQUEST"
             if reason is not None:
-                self.disable("SAFETY_STOP: " + reason)
+                if reason == "TRACKING_HOLD":
+                    self.enter_hold("TRACKING", "TRACKING_HOLD", now, detail="NO_TRACKING")
+                    return
+                if reason == "NOT_AUTO_MODE":
+                    self.clear_hold_state()
+                    self.disable("MANUAL_INTERVENTION")
+                    return
+                if reason == "EXTERNAL_STOP_REQUEST":
+                    self.clear_hold_state()
+                    self.disable("EXTERNAL_STOP_REQUEST")
+                    return
+                kind, status_label = recovery.classify_readiness_fault(reason)
+                if kind == "TRANSIENT":
+                    self.enter_hold("TRANSIENT", status_label, now, detail=reason)
+                else:
+                    self.clear_hold_state()
+                    self.disable(status_label)
                 return
             dt = 0.1 if self.last_tick is None else now - self.last_tick
             self.last_tick = now
             try:
                 pose = self.current_pose(now)
                 if pose is None:
-                    self.disable("SAFETY_STOP: POSE_STALE")
+                    self.enter_hold("TRANSIENT", "SENSOR_HOLD", now, detail="POSE_STALE")
                     return
                 result = self.core.step(
                     pose, self.wheel, now, dt,

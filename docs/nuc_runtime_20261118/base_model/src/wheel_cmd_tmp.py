@@ -5,6 +5,7 @@ import threading
 
 import rospy
 from geometry_msgs.msg import Twist
+from sensor_msgs.msg import Imu
 from std_msgs.msg import Int16MultiArray
 
 
@@ -45,10 +46,20 @@ RAMP_TERMINAL_MPS = 0.06
 STATUS_FRESH_S = 0.30
 
 # Legacy: 기존 DWA 정지 방식
-# Fast: FF-PID 전용 시간 기반 Stop Ramp
+# Fast: FF-PID 전용 실측 기반 2단계 Stop Ramp (커브 시 0.20 정렬 -> 0.03 감속 -> 0.15 이하 시 S)
 STOP_RAMP_MODE = "legacy"
-FAST_STOP_DECEL_MPS2 = 2.0
 FAST_STOP_PERIOD_S = 0.02  # 50Hz
+FAST_STOP_ALIGN_MPS = 0.20
+FAST_STOP_ALIGN_DIFF_MPS = 0.08
+FAST_STOP_ALIGN_MAX_S = 1.0
+FAST_STOP_FINAL_MPS = 0.03
+FAST_STOP_S_MPS = 0.15
+FAST_STOP_MAX_S = 1.5
+FAST_STOP_IMU_TOPIC = "/livox/imu"
+FAST_STOP_IMU_FRESH_S = 0.20
+FAST_STOP_IMU_MAX_GAP_S = 0.08
+FAST_STOP_IMU_ABORT_DEG_S = 50.0
+FAST_STOP_IMU_ABORT_HOLD_S = 0.10
 
 # Below this the wheels were observed not to turn the loaded chair at all.
 # On 2026-07-29 the follower held its maximum +0.5 rad/s for four seconds
@@ -113,65 +124,118 @@ def stop_ramp_command(left_mps, right_mps):
     return direction, magnitude, direction, magnitude, 79
 
 class FastStopRamp:
-    """FF-PID 전용 시간 기반 Stop Ramp."""
+    """FF-PID 전용 실측 기반 2단계 Stop Ramp.
 
-    def __init__(self):
+    1단계(align): 실측 좌우 바퀴를 align_mps(0.20 m/s) 이하로 수렴·정렬
+                  (느린 바퀴는 절대 가속하지 않음: min(align_mps, left, right)).
+    2단계(final): 정렬 완료 후 양쪽에 final_mps(0.03 m/s)를 보내 실측 양쪽 모두
+                  s_threshold_mps(0.15 m/s) 이하가 되면 S 송신.
+
+    한쪽이라도 이미 정지/역회전(<= 0.06 m/s)이거나, 양쪽 이미 <= 0.15 m/s 이거나,
+    IMU 급회전 감지 또는 전체 타임아웃(max_duration_s) 시 즉시 S로 종료.
+    """
+
+    def __init__(self,
+                 align_mps=FAST_STOP_ALIGN_MPS,
+                 align_diff_mps=FAST_STOP_ALIGN_DIFF_MPS,
+                 align_max_s=FAST_STOP_ALIGN_MAX_S,
+                 final_mps=FAST_STOP_FINAL_MPS,
+                 s_threshold_mps=FAST_STOP_S_MPS,
+                 max_duration_s=FAST_STOP_MAX_S,
+                 imu_abort_deg_s=FAST_STOP_IMU_ABORT_DEG_S,
+                 imu_abort_hold_s=FAST_STOP_IMU_ABORT_HOLD_S):
+        self.align_mps = float(align_mps)
+        self.align_diff_mps = float(align_diff_mps)
+        self.align_max_s = float(align_max_s)
+        self.final_mps = float(final_mps)
+        self.s_threshold_mps = float(s_threshold_mps)
+        self.max_duration_s = float(max_duration_s)
+        self.imu_abort_rad_s = math.radians(float(imu_abort_deg_s))
+        self.imu_abort_hold_s = float(imu_abort_hold_s)
         self.reset()
 
     def reset(self):
         self.started_at = None
-        self.initial_mps = None
-        self.direction = None
+        self.stage = "align"
+        self.imu_high_since = None
+        self.last_imu_stamp = None
         self.done = False
 
     def abort(self):
         self.done = True
 
-    def command(self, now, left, right):
+    def command(self, now, left, right, imu_wz_rad_s=None, imu_stamp=None):
         if self.done:
             return STOP_COMMAND
 
         if not all(math.isfinite(x) for x in (now, left, right)):
             return self.finish()
 
-        # 한 바퀴라도 정지했거나 서로 반대 방향이면 즉시 S
-        if (abs(left) <= RAMP_TERMINAL_MPS or
-                abs(right) <= RAMP_TERMINAL_MPS or
-                left * right <= 0 or
-                max(abs(left), abs(right)) > MAX_LINEAR_MPS):
+        # 한 바퀴라도 정지했거나 역회전/후진(음수)이면 즉시 S (멈춘 바퀴에 전진 명령 금지)
+        if (left <= RAMP_TERMINAL_MPS or
+                right <= RAMP_TERMINAL_MPS or
+                max(left, right) > MAX_LINEAR_MPS):
             return self.finish()
 
-        direction = 67 if left > 0 else 87
+        # 실측 양쪽 바퀴 모두 S 진입 기준(0.15 m/s) 이하이면 즉시 S
+        if max(left, right) <= self.s_threshold_mps:
+            return self.finish()
+
+        # 정지 감속 중 IMU 급회전 감지 시 단계 무시하고 즉시 S
+        # 서로 다른 IMU 샘플 시각(imu_stamp)으로 지속 시간을 판정해 1프레임 스파이크 오인 방지
+        if (imu_wz_rad_s is not None and math.isfinite(imu_wz_rad_s) and
+                self.imu_abort_rad_s > 0.0):
+            sample_t = now if imu_stamp is None else float(imu_stamp)
+            if math.isfinite(sample_t):
+                if self.last_imu_stamp is None or sample_t > self.last_imu_stamp:
+                    if (self.last_imu_stamp is not None and
+                            sample_t - self.last_imu_stamp > FAST_STOP_IMU_MAX_GAP_S):
+                        self.imu_high_since = None
+                    self.last_imu_stamp = sample_t
+                    if abs(imu_wz_rad_s) >= self.imu_abort_rad_s:
+                        if self.imu_high_since is None:
+                            self.imu_high_since = sample_t
+                        if sample_t - self.imu_high_since >= self.imu_abort_hold_s:
+                            return self.finish()
+                    else:
+                        self.imu_high_since = None
+        else:
+            self.imu_high_since = None
 
         if self.started_at is None:
             self.started_at = now
-            self.initial_mps = min(abs(left), abs(right))
-            self.direction = direction
-
-        elif now < self.started_at or direction != self.direction:
+        elif now < self.started_at:
             return self.finish()
 
         elapsed = now - self.started_at
-
-        # 정지 시작 시 느린 바퀴 속도에서 2.0m/s²로 감속
-        target = self.initial_mps - FAST_STOP_DECEL_MPS2 * elapsed
-
-        # 실측 바퀴 속도보다 높은 명령은 보내지 않음
-        target = min(target, abs(left), abs(right))
-
-        if target <= RAMP_TERMINAL_MPS:
+        if elapsed >= self.max_duration_s:
             return self.finish()
+
+        # 1단계(align) -> 2단계(final) 전환 (단방향: 직진이거나 좌우 차가 0.08 이하면 바로 0.03 감속)
+        if self.stage == "align":
+            aligned = abs(left - right) <= self.align_diff_mps + 1e-9
+            if aligned or elapsed >= self.align_max_s or \
+                    min(left, right) <= self.final_mps:
+                self.stage = "final"
+
+        if self.stage == "align":
+            # 느린 바퀴를 가속시키지 않으면서 양쪽을 align_mps(0.20)으로 수렴
+            target = min(self.align_mps, left, right)
+        else:
+            # 최종 감속 목표(0.03), 실측보다 높은 명령은 보내지 않음
+            target = min(self.final_mps, left, right)
 
         magnitude = (
             int(round(target * 3.6 * COUNTS_PER_KMH))
             + MAGNITUDE_OFFSET
         )
+        magnitude = min(magnitude, 127)
 
-        if not MAGNITUDE_OFFSET < magnitude <= 127:
+        if magnitude <= MAGNITUDE_OFFSET:
             return self.finish()
 
-        # 좌우 동일 속도 명령
-        return direction, magnitude, direction, magnitude, 79
+        # 좌우 동일 전진(C=67) 속도 명령
+        return 67, magnitude, 67, magnitude, 79
 
     def finish(self):
         self.done = True
@@ -302,15 +366,52 @@ class WheelCommandGuard:
         self.measured_left_mps = 0.0
         self.measured_right_mps = 0.0
         self.measured_stamp = None
+        self.measured_imu_wz = None
+        self.measured_imu_stamp = None
         self.stop_lock = threading.RLock()
         self.fast_stop_requested = False
-        self.fast_stop_ramp = FastStopRamp()
+        self.fast_stop_ramp = FastStopRamp(
+            align_mps=float(rospy.get_param(
+                "~fast_stop_align_mps", FAST_STOP_ALIGN_MPS)),
+            align_diff_mps=float(rospy.get_param(
+                "~fast_stop_align_diff_mps", FAST_STOP_ALIGN_DIFF_MPS)),
+            align_max_s=float(rospy.get_param(
+                "~fast_stop_align_max_s", FAST_STOP_ALIGN_MAX_S)),
+            final_mps=float(rospy.get_param(
+                "~fast_stop_final_mps", FAST_STOP_FINAL_MPS)),
+            s_threshold_mps=float(rospy.get_param(
+                "~fast_stop_s_mps", FAST_STOP_S_MPS)),
+            max_duration_s=float(rospy.get_param(
+                "~fast_stop_max_s", FAST_STOP_MAX_S)),
+            imu_abort_deg_s=float(rospy.get_param(
+                "~fast_stop_imu_abort_deg_s", FAST_STOP_IMU_ABORT_DEG_S)),
+            imu_abort_hold_s=float(rospy.get_param(
+                "~fast_stop_imu_abort_hold_s", FAST_STOP_IMU_ABORT_HOLD_S)),
+        )
+        self.fast_stop_imu_topic = str(rospy.get_param(
+            "~fast_stop_imu_topic", FAST_STOP_IMU_TOPIC)).strip()
 
         if self.stop_ramp_mode == "fast":
+            rospy.loginfo(
+                "wheel_cmd: fast stop staged (align %.2f -> final %.2f -> "
+                "S <= %.2f m/s, max %.2f s, imu abort %.1f deg/s)",
+                self.fast_stop_ramp.align_mps,
+                self.fast_stop_ramp.final_mps,
+                self.fast_stop_ramp.s_threshold_mps,
+                self.fast_stop_ramp.max_duration_s,
+                math.degrees(self.fast_stop_ramp.imu_abort_rad_s),
+            )
             self.fast_stop_timer = rospy.Timer(
                 rospy.Duration(FAST_STOP_PERIOD_S),
                 self.on_fast_stop_timer
             )
+            if self.fast_stop_imu_topic:
+                rospy.Subscriber(
+                    self.fast_stop_imu_topic,
+                    Imu,
+                    self.on_imu,
+                    queue_size=10,
+                )
         rospy.Subscriber(
             "cmd_vel", Twist, self.on_velocity, queue_size=1)
         rospy.Subscriber(
@@ -319,6 +420,18 @@ class WheelCommandGuard:
             self.on_wheel_status,
             queue_size=5,
         )
+
+    def on_imu(self, message):
+        try:
+            wz = float(message.angular_velocity.z)
+        except (AttributeError, TypeError, ValueError):
+            return
+        if not math.isfinite(wz):
+            return
+        now = rospy.Time.now().to_sec()
+        with self.stop_lock:
+            self.measured_imu_wz = wz
+            self.measured_imu_stamp = now
 
     def publish(self, values):
         message = Int16MultiArray()
@@ -351,10 +464,19 @@ class WheelCommandGuard:
             self.force_fast_stop()
             return
 
+        imu_wz = None
+        imu_stamp = None
+        if (self.measured_imu_stamp is not None and
+                0.0 <= now - self.measured_imu_stamp <= FAST_STOP_IMU_FRESH_S):
+            imu_wz = self.measured_imu_wz
+            imu_stamp = self.measured_imu_stamp
+
         command = self.fast_stop_ramp.command(
             now,
             self.measured_left_mps,
-            self.measured_right_mps
+            self.measured_right_mps,
+            imu_wz_rad_s=imu_wz,
+            imu_stamp=imu_stamp,
         )
         self.publish(command)
 

@@ -292,3 +292,156 @@ def test_a_single_noisy_frame_is_not_a_split():
 
 def test_the_pedestrian_stop_is_still_not_a_fault_under_the_split_test():
     assert run_pairs([(v, v) for v in PEDESTRIAN_STOP_MPS]) == []
+
+
+def test_imu_cross_check_suppresses_brief_brake_stagger_false_alarm():
+    """2026-11-19 false alarm shape: L=0.00, R=0.44 for 0.16 s while IMU is only 10 deg/s."""
+    import math
+    check = sw.StopHonouredCheck()
+    low_imu = math.radians(10.0)
+    said = []
+    for k in range(25):  # 0.25 s at 100 Hz (< 0.50 s no-rot hold)
+        t = k * 0.01
+        check.observe_command(stop_frame(), t)
+        check.observe_imu(low_imu, t)
+        frame = [72, sw.AUTO_MODE, C, 0x21, C, int(round(0.44 * 36.0)) + 0x21]
+        r = check.observe_status(frame, t, sw.AUTO_MODE)
+        if r:
+            said.append((t, r))
+    assert said == []
+
+    # If the same split persists past 0.50 s even with low IMU, it still trips.
+    for k in range(25, 60):
+        t = k * 0.01
+        check.observe_command(stop_frame(), t)
+        check.observe_imu(low_imu, t)
+        frame = [72, sw.AUTO_MODE, C, 0x21, C, int(round(0.44 * 36.0)) + 0x21]
+        r = check.observe_status(frame, t, sw.AUTO_MODE)
+        if r:
+            said.append((t, r))
+    assert len(said) == 1
+    assert said[0][0] >= 0.49
+
+
+def test_imu_cross_check_catches_real_pivot_split_immediately():
+    """2026-11-18 real spin: L=0.00, R=0.44 with IMU -140 deg/s catches inside 0.16 s."""
+    import math
+    check = sw.StopHonouredCheck()
+    high_imu = math.radians(-140.0)
+    said = []
+    for k in range(30):
+        t = k * 0.01
+        check.observe_command(stop_frame(), t)
+        check.observe_imu(high_imu, t)
+        frame = [72, sw.AUTO_MODE, C, 0x21, C, int(round(0.44 * 36.0)) + 0x21]
+        r = check.observe_status(frame, t, sw.AUTO_MODE)
+        if r:
+            said.append((t, r))
+    assert len(said) == 1
+    assert said[0][0] <= 0.17
+
+
+def test_stationary_single_wheel_ghost_speed_is_not_an_alarm():
+    """2026-11-18 10:55 ghost speed: L=0.00, R=0.31 for 3 s with IMU -0.6 deg/s."""
+    import math
+    check = sw.StopHonouredCheck()
+    still_imu = math.radians(-0.6)
+    said = []
+    for k in range(300):
+        t = k * 0.01
+        check.observe_command(stop_frame(), t)
+        check.observe_imu(still_imu, t)
+        frame = [72, sw.AUTO_MODE, C, 0x21, C, int(round(0.31 * 36.0)) + 0x21]
+        r = check.observe_status(frame, t, sw.AUTO_MODE)
+        if r:
+            said.append((t, r))
+    assert said == []
+
+
+def test_cmd_vel_zero_arms_stop_watch_before_wire_s():
+    """Closing the 1.5 s ramp blind window: cmd_vel=0 with C 0.03 on wire still catches ignored stop."""
+    check = sw.StopHonouredCheck()
+    ramp_cmd = [C, 34, C, 34, ord("O")]
+    said = []
+    for k in range(150):  # 1.5 s
+        t = k * 0.01
+        check.observe_cmd_vel(0.0, 0.0, t)
+        check.observe_command(ramp_cmd, t)
+        r = check.observe_status(status(ROLLING, ROLLING), t, sw.AUTO_MODE)
+        if r:
+            said.append((t, r))
+    assert len(said) == 1
+    assert said[0][0] <= 1.05
+    assert "not slowing" in said[0][1]
+
+
+def test_imu_spin_check_catches_uncommanded_spin_in_auto():
+    import math
+    spin = sw.ImuSpinCheck()
+    said = []
+    for k in range(60):  # 0.30 s at 200 Hz
+        t = k * 0.005
+        spin.observe_cmd_vel(0.0, t)
+        r = spin.observe_imu(math.radians(130.0), t, sw.AUTO_MODE)
+        if r:
+            said.append((t, r))
+    assert len(said) == 1
+    assert 0.195 <= said[0][0] <= 0.215
+    assert "uncommanded spin" in said[0][1]
+
+
+def test_imu_spin_check_ignores_brief_bump_transient():
+    """Real Nov 12/16/19 road transients peaked at ~55-62 deg/s for ~0.15 s and must not trip."""
+    import math
+    spin = sw.ImuSpinCheck()
+    for k in range(30):  # 0.15 s at 58 deg/s
+        t = k * 0.005
+        spin.observe_cmd_vel(0.0, t)
+        assert spin.observe_imu(math.radians(58.0), t, sw.AUTO_MODE) is None
+
+
+def test_imu_spin_check_ignores_single_stale_sample():
+    import math
+    spin = sw.ImuSpinCheck()
+    # Same timestamp repeated must never trigger
+    for _ in range(50):
+        assert spin.observe_imu(math.radians(150.0), 1.0, sw.AUTO_MODE) is None
+
+
+def test_imu_spin_check_ignores_normal_commanded_turn_and_manual():
+    import math
+    spin = sw.ImuSpinCheck()
+    # Normal max AUTO turn (~34 deg/s commanded, 38 deg/s actual)
+    for k in range(200):
+        t = k * 0.005
+        spin.observe_cmd_vel(math.radians(34.0), t)
+        assert spin.observe_imu(math.radians(38.0), t, sw.AUTO_MODE) is None
+    # Fast manual joystick spin (90 deg/s in MANUAL mode)
+    for k in range(200, 400):
+        t = k * 0.005
+        assert spin.observe_imu(math.radians(90.0), t, sw.MANUAL_MODE) is None
+
+
+def test_imu_spin_check_resets_after_dropout_gap():
+    """Two 90 deg/s samples separated by a 0.35 s dropout gap must NOT trip."""
+    import math
+    spin = sw.ImuSpinCheck()
+    assert spin.observe_imu(math.radians(90.0), 1.00, sw.AUTO_MODE) is None
+    assert spin.observe_imu(math.radians(90.0), 1.35, sw.AUTO_MODE) is None
+
+
+def test_both_wheels_rolling_at_0194_mps_is_still_caught():
+    """Restoring MOVING_MPS=0.15 ensures both wheels rolling at 0.194 m/s is caught."""
+    import math
+    check = sw.StopHonouredCheck()
+    said = []
+    byte_0194 = int(round(0.194 * 36.0)) + 0x21
+    for k in range(100):  # 10 s at 10 Hz
+        t = k * 0.1
+        check.observe_command(stop_frame(), t)
+        check.observe_imu(math.radians(0.5), t)
+        r = check.observe_status(status(byte_0194, byte_0194), t, sw.AUTO_MODE)
+        if r:
+            said.append((t, r))
+    assert len(said) == 1
+    assert "not slowing" in said[0][1] or "still rolling" in said[0][1]

@@ -10,6 +10,12 @@
   <arg name="turn_boost" default="false"/>
   <arg name="cmd_callers" default="/tip_guard,/ff_pid"/>
   <arg name="stop_ramp_mode" default="legacy"/>
+  <arg name="fast_stop_align_mps" default="0.20"/>
+  <arg name="fast_stop_final_mps" default="0.03"/>
+  <arg name="fast_stop_s_mps" default="0.15"/>
+  <arg name="fast_stop_max_s" default="1.5"/>
+  <arg name="fast_stop_imu_topic" default="/livox/imu"/>
+  <arg name="fast_stop_imu_abort_deg_s" default="50.0"/>
 
   <!-- Robot Description -->
   <param name="robot_description" textfile="$(find base_model)/urdf/wheel.xacro"/>
@@ -28,6 +34,12 @@
     <param name="turn_boost" type="bool" value="$(arg turn_boost)"/>
     <param name="cmd_callers" type="str" value="$(arg cmd_callers)"/>
     <param name="stop_ramp_mode" type="str" value="$(arg stop_ramp_mode)"/>
+    <param name="fast_stop_align_mps" type="double" value="$(arg fast_stop_align_mps)"/>
+    <param name="fast_stop_final_mps" type="double" value="$(arg fast_stop_final_mps)"/>
+    <param name="fast_stop_s_mps" type="double" value="$(arg fast_stop_s_mps)"/>
+    <param name="fast_stop_max_s" type="double" value="$(arg fast_stop_max_s)"/>
+    <param name="fast_stop_imu_topic" type="str" value="$(arg fast_stop_imu_topic)"/>
+    <param name="fast_stop_imu_abort_deg_s" type="double" value="$(arg fast_stop_imu_abort_deg_s)"/>
   </node>
 
 </launch>

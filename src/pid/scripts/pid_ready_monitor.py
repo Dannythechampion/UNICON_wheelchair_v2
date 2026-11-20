@@ -177,10 +177,21 @@ class Monitor:
 
     def on_alarm(self, msg):
         with self.lock:
+            text = (msg.data or "").strip()
+            if not text:
+                self.alarm = None
+                return
             try:
-                self.alarm = json.loads(msg.data)
+                parsed = json.loads(text)
             except (TypeError, ValueError):
-                self.alarm = {"reason": msg.data}
+                self.alarm = {"reason": text}
+                return
+            if isinstance(parsed, dict) and (
+                parsed.get("cleared") is True or parsed.get("alarm") is False
+            ):
+                self.alarm = None
+            else:
+                self.alarm = parsed
 
     def check_nodes(self):
         now = time.monotonic()

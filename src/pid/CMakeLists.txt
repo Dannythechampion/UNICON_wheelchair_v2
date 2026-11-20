@@ -36,5 +36,6 @@ catkin_install_python(
 install(
   FILES
     scripts/ff_pid_core.py
+    scripts/ff_pid_recovery.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
