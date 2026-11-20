@@ -518,6 +518,17 @@ class FFNode:
         if self.replan_resume_pending:
             self.core.station = 0.0
             self.replan_resume_pending = False
+        if (self.wheel is not None and
+                self.wheel_settle.is_clean_forward_rolling()):
+            self.last_command_v = max(
+                0.0,
+                min(float(self.wheel[0]), self.speed_limit_mps,
+                    self.core.max_wheel),
+            )
+            self.last_command_w = 0.0
+        else:
+            self.last_command_v = 0.0
+            self.last_command_w = 0.0
         self.enabled = True
         self.clear_hold_state()
         self.publish_status("RUNNING")

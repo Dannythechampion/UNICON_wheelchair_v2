@@ -74,14 +74,20 @@ def test_wheel_settle_guard_020s_and_ghost_timeout():
     guard2.observe_wheels(0.00, 0.17, 12.50)
     assert guard2.can_resume(12.50) == (True, True)
 
-    # Both wheels rolling (0.20 / 0.20) or high single-wheel speed (0.00 / 0.50)
-    # must NEVER bypass settle via the ghost timeout!
-    for pair in ((0.20, 0.20), (0.00, 0.50)):
+    # Unbalanced rolling (0.40 / 0.10), reversing (-0.20 / -0.20), or high single-wheel
+    # speed (0.00 / 0.50) must NEVER bypass settle via the ghost timeout!
+    for pair in ((0.40, 0.10), (-0.20, -0.20), (0.00, 0.50), (0.12, 0.12)):
         guard3 = rec.WheelSettleGuard(threshold_mps=0.06, settle_s=0.20, timeout_s=2.50)
         for k in range(40):
             t = 20.0 + k * 0.10
             guard3.observe_wheels(pair[0], pair[1], t)
             assert guard3.can_resume(t) == (False, False)
+
+    # Clean forward rolling together (L > 0.15, R > 0.15, |L-R| <= 0.10) resumes immediately
+    guard4 = rec.WheelSettleGuard(threshold_mps=0.06, settle_s=0.20, timeout_s=2.50)
+    guard4.observe_wheels(0.50, 0.45, 30.0)
+    assert guard4.is_clean_forward_rolling() is True
+    assert guard4.can_resume(30.0) == (True, False)
 
 
 # --- 2. FFNode state machine tests (with minimal fake clock & ROS stubs) ---
@@ -138,7 +144,9 @@ def _make_fake_ff_node():
     node.route_name = "A_to_D5"
     node.route_version = "original"
     node.replan_resume_pending = False
-    node.core = types.SimpleNamespace(max_v=0.8, wheel_track=0.46, reset=lambda: None, station=0.0)
+    node.core = types.SimpleNamespace(
+        max_v=0.8, max_wheel=1.0, wheel_track=0.46, reset=lambda: None, station=0.0
+    )
     node.mask = types.SimpleNamespace(contains=lambda pt: True)
     node.enabled = True
     node.finishing = False
@@ -317,3 +325,20 @@ def test_residual_wheel_speed_delays_auto_resume_by_020s_after_settling():
     assert node.try_auto_resume(clock.t) is True
     assert node.enabled is True
     assert node.statuses[-1] == "RUNNING"
+
+
+def test_rolling_forward_resumes_immediately_and_seeds_command_v():
+    mod, node, clock = _make_fake_ff_node()
+    node.on_wheel(_wheel_msg(65, 0.50, 0.50))
+    node.on_motion_policy(_policy_msg("STOP", 0.0, "PATH_OBSTACLE", clock.t))
+    assert node.enabled is False
+
+    # Obstacle clears 0.2s later while both wheels are still cleanly rolling forward at ~0.50 m/s
+    clock.t += 0.20
+    node.on_wheel(_wheel_msg(65, 0.50, 0.47))
+    node.on_motion_policy(_policy_msg("SLOW", 0.60, "PATH_OBSTACLE", clock.t))
+    assert node.enabled is True
+    assert node.statuses[-1] == "RUNNING"
+    # last_command_v seeded to measured speed (clamped to speed_limit), w reset to 0.0
+    assert node.last_command_v == pytest.approx(node.wheel[0], abs=0.01)
+    assert node.last_command_w == pytest.approx(0.0)

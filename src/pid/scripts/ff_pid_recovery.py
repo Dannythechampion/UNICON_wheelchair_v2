@@ -13,6 +13,8 @@ TRANSIENT_HOLD_MAX_S = 3.0     # Max hold for transient perception/pose/wheel hi
 RESUME_WHEEL_SETTLE_S = 0.20   # Both wheels <= 0.06 m/s continuously before auto-resume
 RESUME_WHEEL_TIMEOUT_S = 2.50  # Avoid infinite lockup on a stuck stationary ghost speed
 WHEEL_SETTLE_FRESH_S = 0.35
+ROLLING_RESUME_MIN_MPS = 0.15       # Both wheels clearly rolling forward -> immediate resume
+ROLLING_RESUME_MAX_DIFF_MPS = 0.10  # Max |L-R| allowed for rolling resume
 
 OBSTACLE_STOP_REASONS = frozenset((
     "PATH_OBSTACLE",
@@ -95,21 +97,27 @@ class WheelSettleGuard:
     def __init__(self, threshold_mps=0.06, settle_s=RESUME_WHEEL_SETTLE_S,
                  timeout_s=RESUME_WHEEL_TIMEOUT_S,
                  fresh_s=WHEEL_SETTLE_FRESH_S,
-                 max_ghost_mps=0.35):
+                 max_ghost_mps=0.35,
+                 rolling_min_mps=ROLLING_RESUME_MIN_MPS,
+                 rolling_max_diff_mps=ROLLING_RESUME_MAX_DIFF_MPS):
         self.threshold_mps = float(threshold_mps)
         self.settle_s = float(settle_s)
         self.timeout_s = float(timeout_s)
         self.fresh_s = float(fresh_s)
         self.max_ghost_mps = float(max_ghost_mps)
+        self.rolling_min_mps = float(rolling_min_mps)
+        self.rolling_max_diff_mps = float(rolling_max_diff_mps)
         self.settled_since = None
         self.last_wheel_t = None
         self.last_pair = None
+        self.last_signed_pair = None
         self.wait_since = None
 
     def reset_all(self):
         self.settled_since = None
         self.last_wheel_t = None
         self.last_pair = None
+        self.last_signed_pair = None
         self.wait_since = None
 
     def reset_wait(self):
@@ -128,11 +136,22 @@ class WheelSettleGuard:
             self.settled_since = None
         self.last_wheel_t = now
         self.last_pair = (abs(left), abs(right))
+        self.last_signed_pair = (left, right)
         if abs(left) <= self.threshold_mps and abs(right) <= self.threshold_mps:
             if self.settled_since is None:
                 self.settled_since = now
         else:
             self.settled_since = None
+
+    def is_clean_forward_rolling(self):
+        """True when both wheels are clearly rolling forward together (no S cutoff,
+        no single-wheel residual or reversal)."""
+        if self.last_signed_pair is None:
+            return False
+        left, right = self.last_signed_pair
+        return (left > self.rolling_min_mps and
+                right > self.rolling_min_mps and
+                abs(left - right) <= self.rolling_max_diff_mps + 1e-9)
 
     def _is_single_wheel_ghost(self):
         if self.last_pair is None:
@@ -149,8 +168,11 @@ class WheelSettleGuard:
                 now - self.settled_since + 1e-9 >= self.settle_s):
             self.wait_since = None
             return True, False
+        if fresh and self.is_clean_forward_rolling():
+            self.wait_since = None
+            return True, False
         if not fresh or not self._is_single_wheel_ghost():
-            # Never bypass wheel settle when both wheels are moving or speed > max_ghost_mps.
+            # Never bypass wheel settle when unbalanced, reversing, or speed > max_ghost_mps.
             self.wait_since = None
             return False, False
         if self.wait_since is None:
